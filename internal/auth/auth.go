@@ -19,10 +19,10 @@ const (
 
 // User is the resolved identity for one session.
 type User struct {
-	Name      string
-	Kind      Kind
-	PubKeyFP  string // SHA256 fingerprint, empty for guests without a key
-	StoreID   int64  // 0 for guests
+	Name     string
+	Kind     Kind
+	PubKeyFP string // SHA256 fingerprint, empty for guests without a key
+	StoreID  int64  // 0 for guests
 }
 
 // GuestNames are usernames that always map to an anonymous guest hub session.
