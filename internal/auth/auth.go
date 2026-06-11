@@ -36,6 +36,10 @@ var PodNames = map[string]bool{"pod": true}
 // visitor's public key, print instructions, and disconnect.
 var JoinNames = map[string]bool{"join": true, "signup": true, "register": true}
 
+// DomainNames are usernames that route to the custom-domain self-service flow:
+// list/add/remove the domains pointed at a member's homepage.
+var DomainNames = map[string]bool{"domain": true, "domains": true}
+
 // IsGuestName reports whether the SSH username requests anonymous hub access.
 func IsGuestName(u string) bool { return GuestNames[strings.ToLower(u)] }
 
@@ -44,6 +48,9 @@ func IsPodName(u string) bool { return PodNames[strings.ToLower(u)] }
 
 // IsJoinName reports whether the SSH username requests onboarding.
 func IsJoinName(u string) bool { return JoinNames[strings.ToLower(u)] }
+
+// IsDomainName reports whether the SSH username requests the custom-domain flow.
+func IsDomainName(u string) bool { return DomainNames[strings.ToLower(u)] }
 
 // KindFor infers the identity kind from a (non-guest) username.
 // Usernames prefixed "agent-" are automated clients (PRD §3).

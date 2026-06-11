@@ -7,18 +7,25 @@
 //	ssh join@host   onboarding: registers your key, prints instructions,
 //	                and disconnects — no session
 //	ssh pod@host    your personal Linux pod (paid membership, $1/mo via coinpay)
+//	ssh domain@host point your own domain at your homepage (add/rm/list)
 //
 // Subcommands:
 //
-//	agentbbs                 serve (default)
-//	agentbbs grant-pod NAME MONTHS   manually extend a pod subscription
+//	agentbbs                              serve (default)
+//	agentbbs grant-pod NAME MONTHS        manually extend a pod subscription
+//	agentbbs map-domain DOMAIN NAME       map a custom domain to a homepage
+//	agentbbs unmap-domain DOMAIN NAME     remove a custom-domain mapping
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,10 +47,12 @@ import (
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/hub"
+	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/pods"
 	"github.com/profullstack/agentbbs/internal/sandbox"
+	"github.com/profullstack/agentbbs/internal/sites"
 	"github.com/profullstack/agentbbs/internal/store"
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/arcade"
@@ -59,8 +68,10 @@ func env(k, def string) string {
 type app struct {
 	st       store.Store
 	pods     *pods.Manager // nil when no container engine on host
+	sites    *sites.Manager
 	registry []plugin.Plugin
 	sandbox  *sandbox.Runner
+	mail     mail.Config
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
@@ -80,15 +91,39 @@ func main() {
 		grantPod(st, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "map-domain" || os.Args[1] == "unmap-domain") {
+		domainCmd(st, dataDir, os.Args[1], os.Args[2:])
+		return
+	}
 
 	a := &app{
 		st:      st,
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
+		mail:    mail.ConfigFromEnv(),
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
 		host:    env("AGENTBBS_HOST", "profullstack.com"),
 	}
 	a.registry = []plugin.Plugin{arcade.Plugin{}, about.Plugin{}}
+
+	// Custom domains: maintain the symlink farm Caddy serves and answer its
+	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
+	if sm, err := sites.NewManager(st, dataDir); err != nil {
+		log.Warn("custom domains disabled", "err", err)
+	} else {
+		a.sites = sm
+		if err := sm.Sync(); err != nil {
+			log.Warn("domain symlink sync", "err", err)
+		}
+		askAddr := env("AGENTBBS_ASK_ADDR", "127.0.0.1:8081")
+		go func() {
+			log.Info("on-demand-tls ask listening", "addr", askAddr)
+			if err := sm.ServeAsk(askAddr); err != nil {
+				log.Error("ask server", "err", err)
+			}
+		}()
+	}
+
 	if m, err := pods.Detect(); err == nil {
 		a.pods = m
 		log.Info("pods enabled", "engine", m.Engine())
@@ -96,6 +131,21 @@ func main() {
 		log.Warn("pods disabled", "reason", err)
 	}
 	log.Info("sandbox", "mode", a.sandbox.Mode())
+
+	// Email confirmation endpoint (the link in the join@ verification mail).
+	// Loopback only; Caddy reverse-proxies /verify to it. Separate from the
+	// on-demand-TLS ask server above.
+	verifyAddr := env("AGENTBBS_HTTP_ADDR", "127.0.0.1:8088")
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/verify", a.handleVerify)
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+		log.Info("verify endpoint listening", "addr", verifyAddr)
+		srv := &http.Server{Addr: verifyAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		if err := srv.ListenAndServe(); err != nil {
+			log.Error("verify server", "err", err)
+		}
+	}()
 
 	addr := env("AGENTBBS_ADDR", ":2222")
 	srv, err := wish.NewServer(
@@ -144,6 +194,8 @@ func (a *app) router() wish.Middleware {
 			switch {
 			case auth.IsJoinName(user):
 				a.handleJoin(s)
+			case auth.IsDomainName(user):
+				a.handleDomain(s)
 			case auth.IsPodName(user):
 				a.handlePod(s)
 			case isVideo:
@@ -198,6 +250,10 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	if u.Kind != auth.Guest {
 		ctx.DataDir = filepath.Join(a.dataDir, "users", u.Name)
 		_ = os.MkdirAll(filepath.Join(ctx.DataDir, "wads"), 0o755)
+		// tilde.town-style web home: served at https://<host>/~<name> by the
+		// Caddy front end (see setup.sh). Seed an editable starter page so the
+		// URL works the moment a member first signs in.
+		seedHomepage(filepath.Join(ctx.DataDir, "public_html"), u.Name, a.host)
 	}
 	return hub.New(u, ctx, a.registry), []tea.ProgramOption{tea.WithAltScreen()}
 }
@@ -222,13 +278,43 @@ func (a *app) handleJoin(s ssh.Session) {
 	}
 	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "join")
 
+	// Collect an email and send a confirmation link. The connecting key is the
+	// "uploaded" public key; this prompt adds (or refreshes) the email and
+	// re-issues verification. Requires an interactive session (ssh join@host).
+	wish.Print(s, "  Email (for account confirmation): ")
+	line, _ := bufio.NewReader(s).ReadString('\n')
+	email := strings.TrimSpace(line)
+
+	confirm := "  confirm   no email captured — re-run from an interactive terminal: ssh join@" + a.host
+	if validEmail(email) {
+		token := randToken()
+		if err := a.st.SetEmailVerification(u.ID, email, token); err != nil {
+			log.Error("set verification", "err", err)
+			confirm = "  confirm   error saving email; please retry"
+		} else {
+			url := "https://" + a.host + "/verify?token=" + token
+			switch {
+			case !a.mail.Configured():
+				log.Warn("smtp not configured — confirmation link not emailed", "email", email, "url", url)
+				confirm = "  confirm   email is not configured on this host yet; an admin must verify you"
+			case a.mail.Send(email, "Confirm your AgentBBS account", verifyEmailBody(u.Name, url)) != nil:
+				confirm = "  confirm   couldn't send the email; please retry or contact an admin"
+			default:
+				confirm = "  confirm   check " + email + " for a confirmation link to activate your account"
+			}
+		}
+	} else if email != "" {
+		confirm = "  confirm   that doesn't look like an email — re-run: ssh join@" + a.host
+	}
+
 	ref := payments.Reference("pod", fp)
-	wish.Println(s, strings.Join([]string{
+	wish.Println(s, "\n"+strings.Join([]string{
 		"",
 		"  Welcome to AgentBBS — you're registered.",
 		"",
 		"  account   " + u.Name,
 		"  key       " + fp,
+		confirm,
 		"",
 		"  BBS hub        ssh " + u.Name + "@" + a.host,
 		"  Guest hub      ssh bbs@" + a.host,
@@ -239,6 +325,151 @@ func (a *app) handleJoin(s ssh.Session) {
 		"",
 	}, "\n"))
 	_ = s.Exit(0)
+}
+
+// verifyEmailBody is the plain-text confirmation email.
+func verifyEmailBody(name, url string) string {
+	return "Hi " + name + ",\n\n" +
+		"Confirm your AgentBBS account by opening this link:\n\n" +
+		"  " + url + "\n\n" +
+		"If you didn't request this, you can ignore this email.\n"
+}
+
+// randToken returns a 128-bit hex token for email confirmation.
+func randToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// validEmail is a deliberately loose check: one @, a dotted domain, no spaces.
+func validEmail(e string) bool {
+	if len(e) < 3 || len(e) > 254 || strings.ContainsAny(e, " \t\r\n") {
+		return false
+	}
+	at := strings.LastIndexByte(e, '@')
+	if at <= 0 || at == len(e)-1 {
+		return false
+	}
+	return strings.Contains(e[at+1:], ".")
+}
+
+// handleVerify consumes the email confirmation link.
+func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	u, ok, err := a.st.VerifyEmail(r.URL.Query().Get("token"))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(verifyPage("Something went wrong", "Please try the link again in a moment.")))
+		return
+	}
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(verifyPage("Link invalid or expired",
+			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
+		return
+	}
+	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
+		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
+}
+
+// verifyPage renders the minimal confirmation result page.
+func verifyPage(title, body string) string {
+	return "<!doctype html><meta charset=utf-8><title>" + title + "</title>" +
+		"<style>body{background:#000;color:#33ff66;font:16px/1.6 monospace;max-width:40rem;margin:5rem auto;padding:0 1rem}code{color:#60a5fa}</style>" +
+		"<h1>" + title + "</h1><p>" + body + "</p>"
+}
+
+// handleDomain is the custom-domain self-service route. It is non-interactive
+// and driven by the SSH command, mirroring join@:
+//
+//	ssh domain@host                 list your domains + usage
+//	ssh domain@host add example.com  point a domain at your homepage
+//	ssh domain@host rm  example.com  remove one
+//
+// Members CNAME (or A-record) their domain at the BBS host; Caddy issues a
+// cert on first hit and serves their public_html. Requires a registered key.
+func (a *app) handleDomain(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "domain@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if a.sites == nil {
+		wish.Println(s, "custom domains are temporarily unavailable on this host.")
+		_ = s.Exit(1)
+		return
+	}
+	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "domain")
+
+	args := s.Command()
+	action := ""
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
+	}
+	switch {
+	case action == "add" && len(args) >= 2:
+		domain, err := a.sites.Add(args[1], u.Name)
+		switch {
+		case errors.Is(err, sites.ErrInvalidDomain):
+			wish.Println(s, "not a valid domain: "+args[1])
+			_ = s.Exit(1)
+		case errors.Is(err, store.ErrDomainTaken):
+			wish.Println(s, domain+" is already mapped to another account.")
+			_ = s.Exit(1)
+		case err != nil:
+			wish.Println(s, "could not map domain: "+err.Error())
+			_ = s.Exit(1)
+		default:
+			wish.Println(s, strings.Join([]string{
+				"",
+				"  Mapped " + domain + " → ~" + u.Name + "",
+				"",
+				"  Point your DNS at this host, then visit https://" + domain + ":",
+				"    CNAME   " + domain + "  ->  " + a.host,
+				"    (apex)  A      " + domain + "  ->  <this host's IPv4>",
+				"",
+				"  HTTPS is issued automatically on the first request.",
+				"  Edit your page in your pod: ~/public_html/index.html",
+				"",
+			}, "\n"))
+			_ = s.Exit(0)
+		}
+	case (action == "rm" || action == "remove" || action == "del") && len(args) >= 2:
+		domain, err := a.sites.Remove(args[1], u.Name)
+		if err != nil {
+			wish.Println(s, "could not remove domain: "+err.Error())
+			_ = s.Exit(1)
+			return
+		}
+		wish.Println(s, "removed "+domain)
+		_ = s.Exit(0)
+	default:
+		domains, _ := a.sites.List(u.Name)
+		lines := []string{"", "  Custom domains for ~" + u.Name + ":"}
+		if len(domains) == 0 {
+			lines = append(lines, "    (none yet)")
+		}
+		for _, d := range domains {
+			lines = append(lines, "    https://"+d)
+		}
+		lines = append(lines,
+			"",
+			"  Usage:",
+			"    ssh domain@"+a.host+" add <domain>   point a domain at ~"+u.Name,
+			"    ssh domain@"+a.host+" rm  <domain>   remove one",
+			"",
+		)
+		wish.Println(s, strings.Join(lines, "\n"))
+		_ = s.Exit(0)
+	}
 }
 
 // handlePod admits paid members into their personal container.
@@ -252,6 +483,13 @@ func (a *app) handlePod(s ssh.Session) {
 	u, found, err := a.st.UserByFingerprint(fp)
 	if err != nil || !found {
 		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	// Email must be confirmed before paid features unlock (set
+	// AGENTBBS_REQUIRE_VERIFIED_EMAIL=0 to disable on a dev host).
+	if env("AGENTBBS_REQUIRE_VERIFIED_EMAIL", "1") != "0" && !u.EmailVerified {
+		wish.Println(s, "  Confirm your email first — run: ssh join@"+a.host+"  (then open the link we email you).")
 		_ = s.Exit(1)
 		return
 	}
@@ -384,6 +622,55 @@ func grantPod(st store.Store, args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("pod granted to %s until %s\n", u.Name, until.Format(time.RFC3339))
+}
+
+// domainCmd is the ops side of custom domains: `agentbbs map-domain <domain>
+// <user>` / `unmap-domain <domain> <user>`, mirroring grant-pod.
+func domainCmd(st store.Store, dataDir, cmd string, args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: agentbbs %s <domain> <username>\n", cmd)
+		os.Exit(2)
+	}
+	sm, err := sites.NewManager(st, dataDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sites:", err)
+		os.Exit(1)
+	}
+	domain, user := args[0], strings.ToLower(args[1])
+	if cmd == "unmap-domain" {
+		d, err := sm.Remove(domain, user)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "unmap:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("unmapped %s from %s\n", d, user)
+		return
+	}
+	d, err := sm.Add(domain, user)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "map:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("mapped %s -> ~%s\n", d, user)
+}
+
+// seedHomepage creates a member's public_html (served at /~name by the Caddy
+// front end) with a starter index.html, but never clobbers an edit they made.
+func seedHomepage(dir, name, host string) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	index := filepath.Join(dir, "index.html")
+	if _, err := os.Stat(index); err == nil {
+		return // user already has a homepage; leave it alone
+	}
+	page := "<!doctype html>\n<meta charset=utf-8>\n" +
+		"<title>~" + name + "</title>\n" +
+		"<style>body{background:#000;color:#33ff66;font:16px/1.5 monospace;max-width:42rem;margin:4rem auto;padding:0 1rem}a{color:#60a5fa}</style>\n" +
+		"<h1>~" + name + "</h1>\n" +
+		"<p>This is " + name + "'s corner of AgentBBS.</p>\n" +
+		"<p>Edit <code>~/public_html/index.html</code> in your pod (<code>ssh pod@" + host + "</code>) to make it yours.</p>\n"
+	_ = os.WriteFile(index, []byte(page), 0o644)
 }
 
 func remoteIP(s ssh.Session) string {
