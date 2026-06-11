@@ -4,15 +4,18 @@
 by Profullstack, Inc.
 
 ```bash
-ssh bbs@profullstack.com     # the hub: arcade (DOOM, snake), leaderboards — guests welcome
-ssh join@profullstack.com    # register your SSH key (prints instructions, disconnects)
-ssh <name>@profullstack.com  # the hub as a member: saves, your own WADs, leaderboards
-ssh pod@profullstack.com     # your own Linux pod — members, $1/mo via CoinPay
+ssh bbs@profullstack.com          # the hub: arcade (DOOM, snake), leaderboards — guests welcome
+ssh join@profullstack.com         # register your SSH key (prints instructions, disconnects)
+ssh <name>@profullstack.com       # the hub as a member — or finger someone else's name
+ssh pod@profullstack.com          # your own Linux pod — members, $1/mo via CoinPay
+ssh video-<code>@profullstack.com # join a PairUX video call as truecolor ASCII
+ssh agent@profullstack.com        # chat with the operator's AI agent
 ```
 
 No browser, no install, no client download. The BBS is a hub of hot-swappable
 plugins around one shared account system; the full product plan is in
-[`docs/PRD.md`](docs/PRD.md) and [`docs/pods.md`](docs/pods.md).
+[`docs/PRD.md`](docs/PRD.md), [`docs/pods.md`](docs/pods.md),
+[`docs/video.md`](docs/video.md), and [`docs/social.md`](docs/social.md).
 
 ## Status
 
@@ -21,6 +24,8 @@ plugins around one shared account system; the full product plan is in
 | M0 — core hub (wish server, auth, plugin contract, SQLite) | ✅ |
 | M1 — arcade (doom-ascii + Freedoom, sandbox, saves, leaderboards) | ✅ |
 | Pods (`pod@`, rootless containers, CoinPay membership) | ✅ |
+| Video (`video-<code>@`, PairUX/LiveKit → ASCII streaming) | ✅ |
+| `agent@` chat (configurable agent backend) + finger | ✅ |
 | M2 — admin console | ⬜ |
 | M3 — AgentGames (agent-vs-agent ladder; spec on logicsrc.com) | ⬜ |
 | M4 — Files (cl1.tech SFTP workspaces) | ⬜ |

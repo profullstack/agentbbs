@@ -37,6 +37,8 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/profullstack/agentbbs/internal/auth"
+	"github.com/profullstack/agentbbs/internal/calls"
+	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -138,11 +140,18 @@ func (a *app) router() wish.Middleware {
 		hubHandler := activeterm.Middleware()(btMw(next))
 		return func(s ssh.Session) {
 			user := strings.ToLower(s.User())
+			code, isVideo := calls.RouteCode(user)
 			switch {
 			case auth.IsJoinName(user):
 				a.handleJoin(s)
 			case auth.IsPodName(user):
 				a.handlePod(s)
+			case isVideo:
+				a.handleVideo(s, code)
+			case user == "agent":
+				a.handleChat(s)
+			case a.handleFinger(s, user):
+				// fingered an existing account that isn't the caller's; done.
 			default:
 				hubHandler(s)
 			}
@@ -278,6 +287,80 @@ func (a *app) handlePod(s ssh.Session) {
 		wish.Println(s, "pod error: "+err.Error())
 		_ = s.Exit(1)
 	}
+}
+
+// handleVideo joins a PairUX call rendered as ASCII (docs/video.md).
+// `video@` prompts for a code; `video-<code>@` joins directly. Codes are
+// minted by PairUX — starting a call requires already having one.
+func (a *app) handleVideo(s ssh.Session, code string) {
+	identity := "ssh-guest"
+	if fp := auth.Fingerprint(s.PublicKey()); fp != "" {
+		if u, found, _ := a.st.UserByFingerprint(fp); found {
+			identity = "ssh-" + u.Name
+		}
+	}
+	sessID, _ := a.st.RecordSession(0, s.User(), remoteIP(s), "video")
+	defer func() { _ = a.st.EndSession(sessID) }()
+	if err := calls.Handle(s, code, identity); err != nil {
+		wish.Println(s, "video: "+err.Error())
+	}
+}
+
+// handleChat is the agent@ surface: talk to the operator's agent.
+func (a *app) handleChat(s ssh.Session) {
+	u := auth.User{Name: "guest-" + remoteIP(s), Kind: auth.Guest}
+	if fp := auth.Fingerprint(s.PublicKey()); fp != "" {
+		if su, found, _ := a.st.UserByFingerprint(fp); found {
+			u = auth.User{Name: su.Name, Kind: auth.Kind(su.Kind), PubKeyFP: fp, StoreID: su.ID}
+		}
+	}
+	sessID, _ := a.st.RecordSession(u.StoreID, s.User(), remoteIP(s), "agent")
+	defer func() { _ = a.st.EndSession(sessID) }()
+	if err := chat.Handle(s, a.st, u); err != nil {
+		wish.Println(s, "chat: "+err.Error())
+	}
+}
+
+// handleFinger prints a classic finger card when someone ssh's to an
+// existing account name that isn't their own (e.g. ssh anthony@host).
+// Returns false when the route should fall through to the hub.
+func (a *app) handleFinger(s ssh.Session, username string) bool {
+	if auth.IsGuestName(username) {
+		return false
+	}
+	u, found, err := a.st.UserByName(username)
+	if err != nil || !found {
+		return false // unclaimed name → hub (claim flow)
+	}
+	if fp := auth.Fingerprint(s.PublicKey()); fp != "" && fp == u.PubKeyFP {
+		return false // it's them → hub
+	}
+
+	lastSeen := "never"
+	if t, ok, _ := a.st.LastSeen(u.ID); ok {
+		lastSeen = t.Local().Format("2006-01-02 15:04 MST")
+	}
+	plan := "no plan."
+	for _, p := range []string{
+		filepath.Join(a.dataDir, "users", u.Name, ".plan"),
+		filepath.Join(a.dataDir, "users", u.Name, "plan.txt"),
+	} {
+		if b, err := os.ReadFile(p); err == nil {
+			plan = strings.TrimSpace(string(b))
+			break
+		}
+	}
+	_, _ = a.st.RecordSession(0, s.User(), remoteIP(s), "finger")
+	wish.Println(s, strings.Join([]string{
+		"",
+		"  Login: " + u.Name + "    Kind: " + u.Kind,
+		"  Member since: " + u.CreatedAt.Format("2006-01-02") + "    Last seen: " + lastSeen,
+		"  Plan:",
+		"    " + strings.ReplaceAll(plan, "\n", "\n    "),
+		"",
+	}, "\n"))
+	_ = s.Exit(0)
+	return true
 }
 
 func grantPod(st store.Store, args []string) {
