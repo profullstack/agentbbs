@@ -29,6 +29,7 @@ REPO="${REPO:-https://github.com/profullstack/agentbbs.git}"
 SRC_DIR="${SRC_DIR:-/opt/agentbbs}"
 DATA_DIR="${DATA_DIR:-/var/lib/agentbbs}"
 ASK_ADDR="${ASK_ADDR:-127.0.0.1:8081}"   # agentbbs on-demand-TLS ask endpoint (must match agentbbs.env)
+HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ email confirmation links)
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
@@ -149,6 +150,18 @@ AGENTBBS_POD_IMAGE=${POD_IMAGE}
 # Caddyfile's on_demand_tls ask URL.
 AGENTBBS_ASK_ADDR=${ASK_ADDR}
 
+# join@ email verification. The confirm links in the mail hit
+# https://${DOMAIN}/verify, which Caddy proxies to this loopback endpoint.
+# Without SMTP config the link is only logged (journalctl -u agentbbs).
+AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
+# AGENTBBS_SMTP_HOST=
+# AGENTBBS_SMTP_PORT=587
+# AGENTBBS_SMTP_USER=
+# AGENTBBS_SMTP_PASS=
+# AGENTBBS_SMTP_FROM=bbs@${DOMAIN}
+# pod@ requires a verified email; set 0 to disable on a dev host:
+# AGENTBBS_REQUIRE_VERIFIED_EMAIL=1
+
 # Pods (CoinPay \$1/mo membership) — required for pod@ to charge/verify:
 # AGENTBBS_COINPAY_PAY_TMPL=
 # AGENTBBS_COINPAY_VERIFY_CMD=
@@ -243,6 +256,11 @@ cat > /etc/caddy/Caddyfile <<CADDY
 
 ${DOMAIN} {
 	encode zstd gzip
+
+	# join@ email confirmation links (agentbbs loopback /verify endpoint)
+	handle /verify {
+		reverse_proxy http://${HTTP_ADDR}
+	}
 
 	# tilde.town-style homepages: /~name[/path] -> users/name/public_html/path
 	@tilde path_regexp tilde ^/~([^/]+)(/.*)?\$
