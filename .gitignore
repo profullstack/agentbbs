@@ -1,0 +1,7 @@
+/agentbbs
+/data/
+/assets/
+/.build/
+*.db
+*.log
+.env
