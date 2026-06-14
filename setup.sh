@@ -111,6 +111,21 @@ if [ "$("$GO_ROOT/bin/go" version 2>/dev/null | awk '{print $3}')" != "go${GO_VE
 fi
 export PATH="$GO_ROOT/bin:$PATH"
 
+# Persistent, root-owned Go caches. Two reasons this matters on this box:
+#  1. The self-update timer runs setup.sh as a systemd oneshot with no $HOME, so
+#     a bare `go build` aborts with "module cache not found: neither GOMODCACHE
+#     nor GOPATH is set" before it compiles a thing. Setting these explicitly
+#     (not relying on $HOME) fixes timer-driven redeploys.
+#  2. A warm cache means an incremental redeploy recompiles only what changed, so
+#     the 458MB droplet stops OOM-killing the compiler on every build. Combined
+#     with GOMAXPROCS=1 + `go build -p=1`, peak memory stays within RAM+swap.
+export HOME="${HOME:-/root}"
+export GOPATH="${GOPATH:-/var/cache/agentbbs/go}"
+export GOMODCACHE="${GOMODCACHE:-$GOPATH/pkg/mod}"
+export GOCACHE="${GOCACHE:-/var/cache/agentbbs/go-build}"
+export GOMAXPROCS=1
+mkdir -p "$GOPATH" "$GOCACHE"
+
 # ---- 3. service user + rootless podman prerequisites -----------------------
 if ! id "$SVC_USER" >/dev/null 2>&1; then
   log "creating service user $SVC_USER"
@@ -304,6 +319,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# systemd oneshots start with no HOME; set one so git (and Go, via setup.sh)
+# behave the same as an interactive root deploy instead of erroring.
+Environment=HOME=/root
 Environment=REPO=${REPO}
 Environment=BRANCH=${BRANCH}
 Environment=SRC_DIR=${SRC_DIR}
