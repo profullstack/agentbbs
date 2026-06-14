@@ -65,6 +65,53 @@ func IsDomainName(u string) bool { return DomainNames[strings.ToLower(u)] }
 // IsAdminName reports whether the SSH username requests the admin console.
 func IsAdminName(u string) bool { return AdminNames[strings.ToLower(u)] }
 
+// systemReserved are names that don't drive an SSH route but would still
+// collide with a per-user subdomain (<name>.<host>), the agent route, or common
+// infra hostnames — so members may not claim them as account names.
+var systemReserved = map[string]bool{
+	"agent": true, "video": true, "www": true, "api": true, "mail": true,
+	"smtp": true, "imap": true, "ftp": true, "ns": true, "ns1": true, "ns2": true,
+	"cdn": true, "static": true, "assets": true, "root": true, "abuse": true,
+	"postmaster": true, "webmaster": true, "support": true, "help": true,
+	"admin": true, "sysop": true, "bbs": true, "guest": true, "pod": true,
+}
+
+// IsReservedName reports whether name is claimed by a route or infra label and
+// therefore cannot be used as a member's account name.
+func IsReservedName(name string) bool {
+	n := strings.ToLower(name)
+	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] || systemReserved[n] {
+		return true
+	}
+	return strings.HasPrefix(n, "video-") // video-<code> call routes
+}
+
+// SanitizeUsername normalizes a requested account name to the charset the hub
+// and per-user subdomains allow: lowercased [a-z0-9-], 3–20 chars, with '_' and
+// spaces folded to '-', no doubled, leading, or trailing dashes. It returns the
+// cleaned name and whether it is usable (right length and not reserved).
+func SanitizeUsername(raw string) (string, bool) {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(raw)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == ' ':
+			if b.Len() > 0 && !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) < 3 || len(name) > 20 || IsReservedName(name) {
+		return name, false
+	}
+	return name, true
+}
+
 // IsGameName reports whether the SSH username requests the AgentGames protocol.
 func IsGameName(u string) bool { return GameNames[strings.ToLower(u)] }
 

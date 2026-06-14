@@ -332,21 +332,25 @@ func (a *app) handleJoin(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
+	in := bufio.NewReader(s)
+
 	u, found, err := a.st.UserByFingerprint(fp)
-	if err == nil && !found {
-		name := "member-" + strings.ToLower(strings.TrimPrefix(fp, "SHA256:"))[:8]
-		u, err = a.st.EnsureUser(name, string(auth.Member), fp)
-	}
 	if err != nil {
 		wish.Fatalln(s, "registration error: "+err.Error())
 		return
 	}
+	if !found {
+		// New key: let the visitor pick their own handle before we create the
+		// account (a returning key keeps the name it already chose).
+		wish.Println(s, "\n  Welcome to AgentBBS — let's set up your account.")
+		if u, err = a.registerNewMember(s, in, fp); err != nil {
+			wish.Fatalln(s, "registration error: "+err.Error())
+			return
+		}
+	}
 	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "join")
 
-	in := bufio.NewReader(s)
 	wish.Println(s, "\n"+strings.Join([]string{
-		"  Welcome to AgentBBS — let's set up your account.",
-		"",
 		"  account   " + u.Name,
 		"  key       " + fp,
 	}, "\n"))
@@ -374,6 +378,46 @@ func (a *app) handleJoin(s ssh.Session) {
 	// 2) Premium ($10 lifetime): personal @host email + custom domains.
 	a.offerPremium(s, &u)
 	_ = s.Exit(0)
+}
+
+// registerNewMember asks the visitor to choose a username, then creates their
+// member account under it. The name is sanitized to the hub/subdomain charset,
+// rejected if reserved, and must be free; pressing enter accepts a generated
+// member-<fp8> default. Returns the created user.
+func (a *app) registerNewMember(s ssh.Session, in *bufio.Reader, fp string) (store.User, error) {
+	def := "member-" + strings.ToLower(strings.TrimPrefix(fp, "SHA256:"))[:8]
+	wish.Println(s, "\n  Pick a username — letters, numbers and dashes, 3–20 chars.")
+	wish.Println(s, "  It's your handle for  ssh <name>@"+a.host+"  and  https://"+a.host+"/~<name>.")
+
+	for tries := 0; tries < 5; tries++ {
+		wish.Print(s, "\n  Username ["+def+"]: ")
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return store.User{}, err
+		}
+		raw := strings.TrimSpace(line)
+		if raw == "" {
+			return a.st.EnsureUser(def, string(auth.Member), fp)
+		}
+		name, ok := auth.SanitizeUsername(raw)
+		switch {
+		case !ok && auth.IsReservedName(name):
+			wish.Println(s, "  \""+name+"\" is reserved — pick another.")
+			continue
+		case !ok:
+			wish.Println(s, "  needs 3–20 chars of letters, numbers or dashes — try again.")
+			continue
+		}
+		if _, taken, err := a.st.UserByName(name); err != nil {
+			return store.User{}, err
+		} else if taken {
+			wish.Println(s, "  \""+name+"\" is taken — try another.")
+			continue
+		}
+		return a.st.EnsureUser(name, string(auth.Member), fp)
+	}
+	wish.Println(s, "  Keeping "+def+" for now.")
+	return a.st.EnsureUser(def, string(auth.Member), fp)
 }
 
 // verifyEmailInteractive collects an email, emails a 6-digit code, and prompts
