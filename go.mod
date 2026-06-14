@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/ssh v0.0.0-20250826160808-ebfa259c7309
 	github.com/charmbracelet/wish v1.4.7
 	github.com/creack/pty v1.1.24
+	github.com/dustin/go-nntp v0.0.0-20210723005859-f00d51cf8cc1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/livekit/protocol v1.46.0
 	github.com/livekit/server-sdk-go/v2 v2.16.6

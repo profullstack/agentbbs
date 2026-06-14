@@ -161,7 +161,56 @@ type Store interface {
 	// ErrQuotaExceeded if the member is already at or above quota.
 	RecordQryptInvite(username, jti string, quota int) error
 
+	// News (NNTP) — the members-only Usenet server (docs/news.md).
+
+	// EnsureNewsGroup creates a newsgroup if absent (idempotent), setting the
+	// description only on first creation.
+	EnsureNewsGroup(name, description string) error
+	// NewsGroups lists every group with its article counts, name-sorted.
+	NewsGroups() ([]NewsGroup, error)
+	// NewsGroup returns one group (with counts), or ok=false if unknown.
+	NewsGroup(name string) (NewsGroup, bool, error)
+	// NewsArticleByNum fetches an article by its per-group sequence number.
+	NewsArticleByNum(group string, num int64) (NewsArticle, bool, error)
+	// NewsArticleByMsgID fetches the first article with this Message-ID (any
+	// group it was posted to).
+	NewsArticleByMsgID(msgID string) (NewsArticle, bool, error)
+	// NewsArticlesRange returns articles in [from,to] (inclusive) for a group,
+	// ordered by number, for OVER/XOVER.
+	NewsArticlesRange(group string, from, to int64) ([]NewsArticle, error)
+	// InsertNewsArticle stores an article in a group, assigning the next
+	// per-group number, and returns the stored row (with its number).
+	InsertNewsArticle(a NewsArticle) (NewsArticle, error)
+
 	Close() error
+}
+
+// NewsGroup is a newsgroup plus the cached article-number bounds NNTP clients
+// expect (Low/High/Count). Empty groups report Low=1, High=0, Count=0.
+type NewsGroup struct {
+	Name        string
+	Description string
+	Posting     bool
+	Count       int64
+	Low         int64
+	High        int64
+	CreatedAt   time.Time
+}
+
+// NewsArticle is one stored article within a group. Headers beyond these are
+// reconstructed at serve time (Message-ID, Newsgroups, Path) from these fields.
+type NewsArticle struct {
+	Group     string
+	Num       int64
+	MsgID     string
+	Subject   string
+	From      string // the From: header (stamped to the posting member)
+	Refs      string // the References: header
+	Date      string // the Date: header as posted (RFC1123Z)
+	Body      string
+	Lines     int
+	Bytes     int
+	CreatedAt time.Time
 }
 
 // RatingRow is one ladder entry.
@@ -399,6 +448,29 @@ CREATE TABLE IF NOT EXISTS qrypt_invites (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_qrypt_invites_user ON qrypt_invites(username);
+CREATE TABLE IF NOT EXISTS news_groups (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  posting INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS news_articles (
+  id INTEGER PRIMARY KEY,
+  grp TEXT NOT NULL,
+  num INTEGER NOT NULL,
+  msg_id TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '',
+  refs TEXT NOT NULL DEFAULT '',
+  date TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  lines INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(grp, num)
+);
+CREATE INDEX IF NOT EXISTS idx_news_articles_grp ON news_articles(grp, num);
+CREATE INDEX IF NOT EXISTS idx_news_articles_msgid ON news_articles(msg_id);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {

@@ -53,11 +53,13 @@ import (
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
+	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
+	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/pods"
@@ -96,12 +98,14 @@ type app struct {
 	sandbox  *sandbox.Runner
 	mail     mail.Config
 	fe       forwardemail.Config // premium @bbs email provisioning
+	forgejo  forgejo.Config      // AgentGit git.profullstack.com account provisioning
 	live     *liveReg            // in-memory live-session registry (admin console)
 	gamesReg *games.Registry     // AgentGames catalog
 	mm       *games.Matchmaker   // AgentGames matchmaker (agent-vs-agent)
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
+	newsAddr string // loopback NNTP address the news@ reader dials
 }
 
 func main() {
@@ -145,6 +149,7 @@ func main() {
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
 		mail:    mail.ConfigFromEnv(),
 		fe:      fe,
+		forgejo: forgejo.ConfigFromEnv(),
 		live:    newLiveReg(),
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
@@ -200,6 +205,36 @@ func main() {
 	// AgentGames WebSocket endpoint (twin of the game@ SSH route). Loopback;
 	// Caddy proxies wss://host/play to it.
 	go a.serveGameWS(env("AGENTBBS_GAME_WS_ADDR", "127.0.0.1:8090"))
+
+	// News (NNTP) server: the members-only Usenet network (docs/news.md). The
+	// loopback plaintext listener backs the in-BBS news@ reader; the public
+	// NNTPS listener (:563, TLS) serves desktop newsreaders and agents. Free for
+	// every registered member, like irc@. Disable with AGENTBBS_NEWS=0.
+	a.newsAddr = env("AGENTBBS_NEWS_ADDR", news.DefaultAddr)
+	if env("AGENTBBS_NEWS", "1") == "1" {
+		newsHost := env("AGENTBBS_NEWS_HOST", "news."+strings.TrimPrefix(host, "bbs."))
+		ns := news.New(st, newsHost)
+		if err := ns.SeedGroups(news.ParseGroups(os.Getenv("AGENTBBS_NEWS_GROUPS"))); err != nil {
+			log.Warn("news seed groups", "err", err)
+		}
+		go func() {
+			log.Info("news loopback listening", "addr", a.newsAddr)
+			if err := ns.ServeLoopback(context.Background(), a.newsAddr); err != nil {
+				log.Error("news loopback", "err", err)
+			}
+		}()
+		if cert, key := os.Getenv("AGENTBBS_NEWS_TLS_CERT"), os.Getenv("AGENTBBS_NEWS_TLS_KEY"); cert != "" && key != "" {
+			tlsAddr := env("AGENTBBS_NEWS_TLS_ADDR", ":563")
+			go func() {
+				log.Info("news NNTPS listening", "addr", tlsAddr, "host", newsHost)
+				if err := ns.ServeTLS(context.Background(), tlsAddr, cert, key); err != nil {
+					log.Error("news nntps", "err", err)
+				}
+			}()
+		} else {
+			log.Warn("news NNTPS disabled (no AGENTBBS_NEWS_TLS_CERT/KEY) — loopback news@ reader still works")
+		}
+	}
 
 	addr := env("AGENTBBS_ADDR", ":2222")
 	srv, err := wish.NewServer(
@@ -268,6 +303,8 @@ func (a *app) router() wish.Middleware {
 				a.handleTorCmd(s)
 			case auth.IsIRCName(user):
 				a.handleIRC(s)
+			case auth.IsNewsName(user):
+				a.handleNews(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -534,6 +571,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 		}
 		if ok {
 			*u = vu
+			a.provisionGit(u)
 			wish.Println(s, "  Email confirmed ✓")
 			return true
 		}
@@ -712,8 +750,28 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
 		return
 	}
+	a.provisionGit(&u)
 	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
 		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
+}
+
+// provisionGit ensures a verified member has a git.profullstack.com account on
+// the AgentGit Forgejo backend. Every verified member gets one — free and paid
+// alike; plan only affects quotas, enforced by AgentGit, not account existence.
+// Failures are logged but never block BBS verification, and it is a no-op when
+// Forgejo is unconfigured.
+func (a *app) provisionGit(u *store.User) {
+	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
+		return
+	}
+	created, err := a.forgejo.EnsureUser(u.Name, u.Email)
+	if err != nil {
+		log.Error("forgejo provision", "user", u.Name, "err", err)
+		return
+	}
+	if created {
+		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	}
 }
 
 // verifyPage renders the minimal confirmation result page.
@@ -986,6 +1044,43 @@ func (a *app) handleIRC(s ssh.Session) {
 	_ = c.Join(irc.DefaultChannel)
 	if err := irc.Run(s, c); err != nil {
 		wish.Println(s, "irc: "+err.Error())
+	}
+}
+
+// handleNews drops a member into the BBS's own (members-only) Usenet/NNTP server
+// using an in-process newsreader: it authenticates to the loopback NNTP listener
+// as the member and runs a Bubble Tea TUI to browse groups, read, and post. Free
+// for any registered member; needs a PTY. External newsreaders and agents reach
+// the same server over NNTPS at news.<host>:563.
+func (a *app) handleNews(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "news@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "the news server is members-only — register first: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "news")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	addr := a.newsAddr
+	if addr == "" {
+		addr = news.DefaultAddr
+	}
+	log.Info("news connect", "user", u.Name, "addr", addr)
+	if err := news.RunReader(s, addr, u.Name); err != nil {
+		wish.Println(s, "news: "+err.Error())
+		_ = s.Exit(1)
 	}
 }
 

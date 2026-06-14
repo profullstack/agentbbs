@@ -61,6 +61,10 @@ var TorNames = map[string]bool{"tor": true}
 // for connecting OUT to remote IRC servers over Tor.
 var IRCNames = map[string]bool{"irc": true}
 
+// NewsNames route a member into the BBS's own (members-only) Usenet/NNTP server
+// via an in-process newsreader. Free for any registered member, like irc@.
+var NewsNames = map[string]bool{"news": true}
+
 // GameNames are usernames that route to AgentGames: the line-delimited-JSON
 // agent-vs-agent match protocol (PRD §5.2). `play@` stays a guest hub alias.
 var GameNames = map[string]bool{"game": true, "games": true}
@@ -92,6 +96,9 @@ func IsTorName(u string) bool { return TorNames[strings.ToLower(u)] }
 // IsIRCName reports whether the SSH username requests the in-BBS IRC client.
 func IsIRCName(u string) bool { return IRCNames[strings.ToLower(u)] }
 
+// IsNewsName reports whether the SSH username requests the in-BBS newsreader.
+func IsNewsName(u string) bool { return NewsNames[strings.ToLower(u)] }
+
 // systemReserved are names that don't drive an SSH route but would still
 // collide with a per-user subdomain (<name>.<host>), the agent route, or common
 // infra hostnames — so members may not claim them as account names.
@@ -108,7 +115,7 @@ var systemReserved = map[string]bool{
 func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
-		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || systemReserved[n] {
+		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes
