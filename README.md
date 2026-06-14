@@ -4,18 +4,17 @@
 by Profullstack, Inc.
 
 ```bash
-ssh bbs@bbs.profullstack.com          # the hub: arcade (DOOM, snake), leaderboards — guests welcome
-ssh join@bbs.profullstack.com         # register + confirm email by code, then the Premium offer
-ssh <name>@bbs.profullstack.com       # the hub as a member — or finger someone else's name
-ssh pod@bbs.profullstack.com          # your own Linux pod — FREE for verified members
-ssh domain@bbs.profullstack.com       # point your domain at your homepage (Premium)
-ssh video-<code>@bbs.profullstack.com # join a PairUX video call as truecolor ASCII
-ssh agent@bbs.profullstack.com        # chat with the operator's AI agent
+ssh join@bbs.profullstack.com      # new here? register + confirm your email, get your account
+ssh <name>@bbs.profullstack.com    # your BBS: hub, arcade, your pod, chat, domains — all inside
 ```
 
-**Membership:** verified-email members are **free** — each gets a Docker pod
-(`ssh pod@`) and a homepage at `https://bbs.profullstack.com/~name`. **Premium**
-($10 one-time, lifetime) adds a personal `name@bbs.profullstack.com` email (via
+Just two SSH front doors: **`join@`** to onboard a new key, then
+**`<name>@`** for everything else — the hub, your pod, the arcade, chat, and
+domains are all reached from there.
+
+**Membership:** a verified-email account is **free** — you get a personal Docker
+pod and a homepage at `https://bbs.profullstack.com/~name`. **Premium** ($10
+one-time, lifetime) adds a personal `name@bbs.profullstack.com` email (via
 forwardemail.net) and custom domains.
 
 No browser, no install, no client download. The BBS is a hub of hot-swappable
@@ -29,7 +28,7 @@ plugins around one shared account system; the full product plan is in
 |---|---|
 | M0 — core hub (wish server, auth, plugin contract, SQLite) | ✅ |
 | M1 — arcade (doom-ascii + Freedoom, sandbox, saves, leaderboards) | ✅ |
-| Pods (`pod@`, rootless containers, CoinPay membership) | ✅ |
+| Pods (rootless containers, free for verified members) | ✅ |
 | Video (`video-<code>@`, PairUX/LiveKit → ASCII streaming) | ✅ |
 | `agent@` chat (configurable agent backend) + finger | ✅ |
 | M2 — admin console | ⬜ |
@@ -43,7 +42,7 @@ plugins around one shared account system; the full product plan is in
 go build -o agentbbs ./cmd/agentbbs
 scripts/fetch-assets.sh          # build doom-ascii + fetch Freedoom (optional)
 ./agentbbs                       # listens on :2222
-ssh -p 2222 bbs@localhost
+ssh -p 2222 join@localhost       # onboard, then: ssh -p 2222 <name>@localhost
 ```
 
 Configuration (env):
@@ -58,8 +57,9 @@ Configuration (env):
 | `AGENTBBS_POD_IMAGE` | `debian:stable-slim` | pod base image |
 | `AGENTBBS_POD_MEM` / `AGENTBBS_POD_CPUS` | `512m` / `1` | pod caps |
 | `AGENTBBS_POD_KEEP` | unset | `1` keeps pods running after disconnect |
-| `AGENTBBS_COINPAY_PAY_TMPL` | coinpay default | pay command shown to users |
-| `AGENTBBS_COINPAY_VERIFY_CMD` | unset | verifier; exit 0 = paid |
+| `COINPAY_API_KEY` | unset | CoinPay API key (Premium payments) |
+| `AGENTBBS_COINPAY_MERCHANT_ID` | unset | CoinPay merchant/business id |
+| `AGENTBBS_FORWARDEMAIL_API_KEY` | unset | forwardemail.net key (Premium email) |
 
 Ops:
 
@@ -86,15 +86,16 @@ Full details, required secrets, and ops commands: [`docs/deploy.md`](docs/deploy
 - **Plugins** (`internal/plugin`): `ID/Title/Description/RequiresAuth/New`; a
   plugin owns the session until it emits `ExitMsg`. Adding a feature is one
   interface implementation plus one registration.
-- **Routing**: SSH username selects the surface — hub, onboarding, or pod.
+- **Routing**: SSH username selects the surface — onboarding (`join@`) or your
+  hub (`<name>@`); pods/arcade/chat/domains are features inside the hub.
 - **Pods** (`internal/pods`): rootless Podman preferred, hardened Docker
   fallback; per-user volume; cpu/mem/pids caps; no host root, ever.
 - **Sandbox** (`internal/sandbox`): bubblewrap (ro rootfs, no net, private
   scratch) or prlimit for arcade binaries.
 - **Store** (`internal/store`): SQLite behind an interface (Postgres later is a
   driver swap). Users, sessions, scores, pod subscriptions.
-- **Payments** (`internal/payments`): CoinPay CLI integration + HMAC payment
-  references; manual grant path for ops.
+- **Payments** (`internal/payments`): CoinPay REST API (coinpayportal.com) for
+  the $10 lifetime membership + HMAC payment references; manual grant for ops.
 
 ## License
 
