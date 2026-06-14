@@ -20,7 +20,8 @@ func TestCreateAndVerifyPremium(t *testing.T) {
 			_ = json.Unmarshal(b, &body)
 			gotBlockchain, _ = body["blockchain"].(string)
 			gotBusiness, _ = body["business_id"].(string)
-			_, _ = w.Write([]byte(`{"payment":{"id":"pay_1","payment_address":"0xABC","crypto_amount":"0.0031","crypto_currency":"ETH","status":"pending"}}`))
+			// crypto_amount comes back as a bare JSON number from the live API.
+			_, _ = w.Write([]byte(`{"payment":{"id":"pay_1","payment_address":"0xABC","crypto_amount":0.0031,"crypto_currency":"ETH","status":"pending"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/payments/pay_1":
 			_, _ = w.Write([]byte(`{"payment":{"id":"pay_1","status":"confirmed"}}`))
 		default:
@@ -74,5 +75,20 @@ func TestNotConfigured(t *testing.T) {
 	}
 	if _, checked := VerifyPremium("pay_1"); checked {
 		t.Fatal("unconfigured verify must not be checked")
+	}
+}
+
+func TestFlexStrDecodesNumberOrString(t *testing.T) {
+	for _, raw := range []string{
+		`{"payment":{"crypto_amount":0.0031}}`,   // live API: bare number
+		`{"payment":{"crypto_amount":"0.0031"}}`, // legacy: quoted string
+	} {
+		var env paymentEnvelope
+		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		if got := string(env.Payment.CryptoAmount); got != "0.0031" {
+			t.Fatalf("crypto_amount from %s = %q, want 0.0031", raw, got)
+		}
 	}
 }

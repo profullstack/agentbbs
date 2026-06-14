@@ -92,15 +92,39 @@ func Reference(plan, pubkeyFP string) string {
 	return "abbs-" + plan + "-" + hex.EncodeToString(mac.Sum(nil))[:12]
 }
 
+// flexStr decodes a JSON value that may arrive as either a string or a number
+// into a string. CoinPay returns crypto_amount as a bare JSON number (e.g.
+// 0.0031), but has sent it quoted in the past — accept both so a representation
+// change on their side can't break the charge again.
+type flexStr string
+
+func (f *flexStr) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*f = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = flexStr(s)
+		return nil
+	}
+	*f = flexStr(b) // number (or other scalar) — keep its literal text
+	return nil
+}
+
 // coinpayPayment is the (subset of the) CoinPay payment object, returned
 // wrapped as {"payment": {…}}.
 type coinpayPayment struct {
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	Address      string `json:"payment_address"`
-	CryptoAmount string `json:"crypto_amount"`
-	CryptoCurr   string `json:"crypto_currency"`
-	QR           string `json:"qr_code"`
+	ID           string  `json:"id"`
+	Status       string  `json:"status"`
+	Address      string  `json:"payment_address"`
+	CryptoAmount flexStr `json:"crypto_amount"`
+	CryptoCurr   string  `json:"crypto_currency"`
+	QR           string  `json:"qr_code"`
 }
 
 type paymentEnvelope struct {
@@ -174,7 +198,7 @@ func CreatePremiumCharge(ref string) (Charge, bool, error) {
 	}
 	return Charge{
 		Address:      p.Address,
-		CryptoAmount: p.CryptoAmount,
+		CryptoAmount: string(p.CryptoAmount),
 		Currency:     p.CryptoCurr,
 		FiatAmount:   PremiumAmount(),
 		FiatCurrency: PremiumCurrency(),
