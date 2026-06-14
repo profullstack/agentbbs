@@ -381,7 +381,9 @@ fi
 # Let Caddy (user 'caddy') read the per-user public_html trees.
 usermod -aG "$SVC_USER" caddy 2>/dev/null || true
 log "writing Caddyfile"
-DOMAIN_RE=$(printf '%s' "$DOMAIN" | sed 's/[.]/\\./g')   # dots escaped for Caddy host_regexp
+# Caddy indexes host labels from the right (com=0, profullstack=1, bbs=2, …);
+# the user subdomain is the next label left, i.e. index = DOMAIN's label count.
+USER_LABEL_IDX=$(printf '%s' "$DOMAIN" | awk -F. '{print NF}')
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -427,15 +429,11 @@ ${DOMAIN} {
 	tls {
 		on_demand
 	}
-	@user host_regexp user ^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.${DOMAIN_RE}\$
-	handle @user {
-		root * ${DATA_DIR}/users/{re.user.1}/public_html
-		try_files {path} {path}/index.html
-		file_server browse
-	}
-	handle {
-		respond "no such user" 404
-	}
+	# Only registered members get an on-demand cert (the ask endpoint gates it),
+	# so {labels.${USER_LABEL_IDX}} is always a real user's public_html.
+	root * ${DATA_DIR}/users/{http.request.host.labels.${USER_LABEL_IDX}}/public_html
+	try_files {path} {path}/index.html
+	file_server browse
 }
 
 # Custom domains a member pointed at this host (ssh domain@${DOMAIN} add ...).
