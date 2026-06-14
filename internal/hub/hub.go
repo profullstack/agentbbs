@@ -27,7 +27,7 @@ var (
 	cursorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
 	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e2e8f0"))
 	lockStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38bdf8"))
+	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11d2a"))
 	motdStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#4ade80")).
