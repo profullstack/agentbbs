@@ -18,20 +18,21 @@ type User struct {
 	PubKeyFP      string
 	Email         string
 	EmailVerified bool
-	Premium       bool // paid the one-time lifetime membership
+	Premium       bool   // paid the one-time lifetime membership
+	PremiumPayID  string // CoinPay payment id of the pending/settled premium charge
 	CreatedAt     time.Time
 }
 
 // userCols is the column list (in struct order) for every user SELECT, kept in
 // sync with scanUser.
-const userCols = `id, name, kind, pubkey_fp, email, email_verified, premium, created_at`
+const userCols = `id, name, kind, pubkey_fp, email, email_verified, premium, premium_pay_id, created_at`
 
 // scanUser reads one user row selected with userCols.
 func scanUser(sc interface{ Scan(...any) error }) (User, error) {
 	var u User
 	var verified, premium int
 	var created string
-	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &premium, &created); err != nil {
+	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &premium, &u.PremiumPayID, &created); err != nil {
 		return User{}, err
 	}
 	u.EmailVerified = verified != 0
@@ -74,6 +75,9 @@ type Store interface {
 	// and clears the code. Returns ok=false on a wrong/empty code.
 	ConfirmEmailCode(userID int64, code string) (User, bool, error)
 
+	// SetPremiumPayment records the CoinPay payment id of a pending premium
+	// charge so a later visit can verify whether it settled.
+	SetPremiumPayment(userID int64, payID string) error
 	// GrantPremium marks the account as a lifetime premium member (the $10
 	// one-time membership), recording the CoinPay payment reference. Idempotent.
 	GrantPremium(userID int64, paymentRef string) error
@@ -154,6 +158,7 @@ func migrate(db *sql.DB) error {
 		{"verify_token", "verify_token TEXT NOT NULL DEFAULT ''"},
 		{"premium", "premium INTEGER NOT NULL DEFAULT 0"},
 		{"premium_ref", "premium_ref TEXT NOT NULL DEFAULT ''"},
+		{"premium_pay_id", "premium_pay_id TEXT NOT NULL DEFAULT ''"},
 	})
 }
 
@@ -310,6 +315,11 @@ func (s *sqliteStore) ConfirmEmailCode(userID int64, code string) (User, bool, e
 	}
 	u.EmailVerified = true
 	return u, true, nil
+}
+
+func (s *sqliteStore) SetPremiumPayment(userID int64, payID string) error {
+	_, err := s.db.Exec(`UPDATE users SET premium_pay_id = ? WHERE id = ?`, payID, userID)
+	return err
 }
 
 func (s *sqliteStore) GrantPremium(userID int64, paymentRef string) error {

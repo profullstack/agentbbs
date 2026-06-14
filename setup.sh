@@ -186,19 +186,17 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 #   Premium \$10 one-time, lifetime — a personal <name>@${DOMAIN} email
 #          (forwardemail.net) plus custom domains (ssh domain@). Offered at join@.
 
-# Premium payment via the coinpay CLI: join@ mints a charge and shows the amount
-# + deposit address; the status command verifies a later settlement. %s is the
-# per-account payment reference. COINPAY_API_KEY + the merchant id are injected
-# by the CI deploy from GitHub secrets (COINPAY_API_KEY / COINPAY_MERCHANT_ID);
-# set them here directly when provisioning by hand:
+# Premium payments hit the CoinPay REST API directly (no coinpay CLI needed):
+# join@ creates a charge and shows the amount + deposit address; a later connect
+# verifies settlement by payment id. COINPAY_API_KEY + the merchant id are
+# injected by the CI deploy from GitHub secrets (COINPAY_API_KEY /
+# COINPAY_MERCHANT_ID); set them here directly when provisioning by hand:
 # COINPAY_API_KEY=cp_live_xxx
-# AGENTBBS_COINPAY_MERCHANT_ID=<merchant/business uuid>   # -> --business-id
+# AGENTBBS_COINPAY_MERCHANT_ID=<merchant/business uuid>
+# AGENTBBS_COINPAY_API_URL=https://coinpayportal.com/api
 # AGENTBBS_PREMIUM_AMOUNT=10
 # AGENTBBS_PREMIUM_CURRENCY=USD
 # AGENTBBS_PREMIUM_BLOCKCHAIN=eth
-# AGENTBBS_COINPAY_PREMIUM_CREATE_CMD=coinpay payment create --amount 10 --currency USD --blockchain eth --json --metadata %s
-# AGENTBBS_COINPAY_PREMIUM_PAY_TMPL=coinpay payment create --amount 10 --currency USD --blockchain eth --metadata %s
-# AGENTBBS_COINPAY_PREMIUM_STATUS_CMD=coinpay payment status %s
 
 # Premium email aliases (<name>@${DOMAIN}) auto-created on forwardemail.net.
 # Without an API key the address is shown but not created (add it manually).

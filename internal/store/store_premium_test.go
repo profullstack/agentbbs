@@ -67,3 +67,23 @@ func TestGrantPremium(t *testing.T) {
 		t.Fatalf("re-grant: %v", err)
 	}
 }
+
+func TestSetPremiumPayment(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	u, _ := st.EnsureUser("erin", "member", "SHA256:eee")
+	if u.PremiumPayID != "" {
+		t.Fatal("new user must have no premium pay id")
+	}
+	if err := st.SetPremiumPayment(u.ID, "pay_abc123"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, _, _ := st.UserByFingerprint("SHA256:eee")
+	if got.PremiumPayID != "pay_abc123" {
+		t.Fatalf("PremiumPayID = %q", got.PremiumPayID)
+	}
+}
