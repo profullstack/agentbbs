@@ -26,6 +26,7 @@ ADMIN_SSH_PORT="${ADMIN_SSH_PORT:-2202}"
 ACME_EMAIL="${ACME_EMAIL:-admin@profullstack.com}"
 SVC_USER="${SVC_USER:-agentbbs}"
 REPO="${REPO:-https://github.com/profullstack/agentbbs.git}"
+BRANCH="${BRANCH:-main}"
 SRC_DIR="${SRC_DIR:-/opt/agentbbs}"
 DATA_DIR="${DATA_DIR:-/var/lib/agentbbs}"
 ASK_ADDR="${ASK_ADDR:-127.0.0.1:8081}"   # agentbbs on-demand-TLS ask endpoint (must match agentbbs.env)
@@ -33,12 +34,23 @@ HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ emai
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
+SELF_UPDATE="${SELF_UPDATE:-1}"     # set 0 to skip the autonomous self-update systemd timer
+SELF_UPDATE_INTERVAL="${SELF_UPDATE_INTERVAL:-15min}"  # how often the box polls origin for new commits
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo ./setup.sh)"
+
+# Serialize runs. A CI deploy (ssh -> setup.sh) and the self-update timer can
+# fire close together; two concurrent git-reset + go-build runs would corrupt
+# each other. Hold an exclusive lock for the whole run (wait up to 5 min).
+if command -v flock >/dev/null; then
+  exec 9>/var/lock/agentbbs-setup.lock
+  flock -w 300 9 || die "another setup.sh run is in progress (lock held >5m)"
+fi
+
 . /etc/os-release 2>/dev/null || true
 [ "${ID:-}" = "ubuntu" ] || warn "tested on Ubuntu; ${ID:-unknown} may differ"
 
@@ -113,16 +125,19 @@ chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/index.html"
 
 # ---- 5. clone/update + build agentbbs --------------------------------------
 if [ -d "$SRC_DIR/.git" ]; then
-  log "updating source in $SRC_DIR"
-  git -C "$SRC_DIR" pull --ff-only
+  log "updating source in $SRC_DIR to origin/$BRANCH"
+  # Hard reset (not pull --ff-only) so an automated deploy survives a force-push
+  # or any local drift on the box — the box always matches origin exactly.
+  git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH"
+  git -C "$SRC_DIR" reset --hard "origin/$BRANCH"
 else
-  log "cloning $REPO"
-  git clone --depth 1 "$REPO" "$SRC_DIR"
+  log "cloning $REPO ($BRANCH)"
+  git clone --depth 1 -b "$BRANCH" "$REPO" "$SRC_DIR"
 fi
 
-if [ "$FETCH_ASSETS" = "1" ] && [ -x "$SRC_DIR/fetch-assets.sh" ]; then
+if [ "$FETCH_ASSETS" = "1" ] && [ -x "$SRC_DIR/scripts/fetch-assets.sh" ]; then
   log "fetching arcade assets (set FETCH_ASSETS=0 to skip)"
-  ( cd "$SRC_DIR" && ./fetch-assets.sh ) || warn "asset fetch failed; arcade may be limited"
+  ( cd "$SRC_DIR" && ./scripts/fetch-assets.sh ) || warn "asset fetch failed; arcade may be limited"
 fi
 
 log "building binaries"
@@ -159,12 +174,33 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 # AGENTBBS_SMTP_USER=
 # AGENTBBS_SMTP_PASS=
 # AGENTBBS_SMTP_FROM=bbs@${DOMAIN}
-# pod@ requires a verified email; set 0 to disable on a dev host:
+# Free pods + custom homepages require a verified email; set 0 to disable on a
+# dev host (then any registered key gets a pod):
 # AGENTBBS_REQUIRE_VERIFIED_EMAIL=1
+# Every new signup is emailed here (subject "bbs"); needs SMTP configured above:
+# AGENTBBS_SIGNUP_NOTIFY=anthony@profullstack.com
 
-# Pods (CoinPay \$1/mo membership) — required for pod@ to charge/verify:
-# AGENTBBS_COINPAY_PAY_TMPL=
-# AGENTBBS_COINPAY_VERIFY_CMD=
+# Membership model:
+#   Free   verified members get their own Docker pod (ssh pod@) and a homepage
+#          at https://${DOMAIN}/~<name>.
+#   Premium \$10 one-time, lifetime — a personal <name>@${DOMAIN} email
+#          (forwardemail.net) plus custom domains (ssh domain@). Offered at join@.
+
+# Premium payment via the coinpay CLI: join@ mints a charge and shows the amount
+# + deposit address; the status command verifies a later settlement. %s is the
+# per-account payment reference.
+# AGENTBBS_PREMIUM_AMOUNT=10
+# AGENTBBS_PREMIUM_CURRENCY=USD
+# AGENTBBS_PREMIUM_BLOCKCHAIN=eth
+# AGENTBBS_COINPAY_PREMIUM_CREATE_CMD=coinpay payment create --amount 10 --currency USD --blockchain eth --json --metadata %s
+# AGENTBBS_COINPAY_PREMIUM_PAY_TMPL=coinpay payment create --amount 10 --currency USD --blockchain eth --metadata %s
+# AGENTBBS_COINPAY_PREMIUM_STATUS_CMD=coinpay payment status %s
+
+# Premium email aliases (<name>@${DOMAIN}) auto-created on forwardemail.net.
+# Without an API key the address is shown but not created (add it manually).
+# AGENTBBS_FORWARDEMAIL_API_KEY=
+# AGENTBBS_FORWARDEMAIL_DOMAIN=${DOMAIN}
+# AGENTBBS_WEBMAIL_URL=https://webmail.${DOMAIN}
 
 # PairUX video calls rendered as ASCII (video@ / tv@ PairUX sources):
 # AGENTBBS_LIVEKIT_URL=
@@ -206,6 +242,46 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
+
+# ---- 7b. autonomous self-update timer (poll origin, redeploy on new commits) -
+if [ "$SELF_UPDATE" = "1" ]; then
+  log "installing self-update timer (every ${SELF_UPDATE_INTERVAL}; set SELF_UPDATE=0 to disable)"
+  cat > /etc/systemd/system/agentbbs-update.service <<UNIT
+[Unit]
+Description=AgentBBS self-update (pull origin/${BRANCH} + redeploy if changed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=REPO=${REPO}
+Environment=BRANCH=${BRANCH}
+Environment=SRC_DIR=${SRC_DIR}
+# Pass through the same overrides this provisioner ran with so a timer-driven
+# redeploy is identical to this one.
+Environment=DOMAIN=${DOMAIN}
+Environment=ADMIN_SSH_PORT=${ADMIN_SSH_PORT}
+ExecStart=${SRC_DIR}/scripts/self-update.sh
+UNIT
+  cat > /etc/systemd/system/agentbbs-update.timer <<UNIT
+[Unit]
+Description=Poll for AgentBBS updates and redeploy
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=${SELF_UPDATE_INTERVAL}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now agentbbs-update.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now agentbbs-update.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/agentbbs-update.service /etc/systemd/system/agentbbs-update.timer
+  systemctl daemon-reload
+fi
 
 # ---- 8. move admin OpenSSH to ADMIN_SSH_PORT (before agentbbs takes :22) -----
 log "moving admin OpenSSH to :${ADMIN_SSH_PORT}"

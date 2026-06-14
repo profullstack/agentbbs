@@ -4,10 +4,10 @@
 //
 //	ssh bbs@host    the BBS hub, guests welcome (play@/guest@ are aliases)
 //	ssh <name>@host the hub as a member/agent (SSH key required)
-//	ssh join@host   onboarding: registers your key, prints instructions,
-//	                and disconnects — no session
-//	ssh pod@host    your personal Linux pod (paid membership, $1/mo via coinpay)
-//	ssh domain@host point your own domain at your homepage (add/rm/list)
+//	ssh join@host   onboarding: registers your key, confirms your email with an
+//	                emailed code, then offers $10 lifetime Premium (CoinPay)
+//	ssh pod@host    your personal Linux pod — free for verified members
+//	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //
 // Subcommands:
 //
@@ -21,7 +21,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -46,6 +46,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
+	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/payments"
@@ -72,6 +73,7 @@ type app struct {
 	registry []plugin.Plugin
 	sandbox  *sandbox.Runner
 	mail     mail.Config
+	fe       forwardemail.Config // premium @bbs email provisioning
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
@@ -96,13 +98,19 @@ func main() {
 		return
 	}
 
+	host := env("AGENTBBS_HOST", "profullstack.com")
+	fe := forwardemail.ConfigFromEnv()
+	if fe.Domain == "" {
+		fe.Domain = host // personal addresses live on the BBS host by default
+	}
 	a := &app{
 		st:      st,
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
 		mail:    mail.ConfigFromEnv(),
+		fe:      fe,
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
-		host:    env("AGENTBBS_HOST", "profullstack.com"),
+		host:    host,
 	}
 	a.registry = []plugin.Plugin{arcade.Plugin{}, about.Plugin{}}
 
@@ -240,6 +248,9 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		if su.Name != username {
 			wish.Println(s, "note: this key belongs to "+su.Name+" — signed in as "+su.Name+".")
 		}
+		// Catch a premium payment that settled since their last visit (silent;
+		// provisions their @host email alias on the transition).
+		a.ensurePremium(&su)
 		u = auth.User{Name: su.Name, Kind: auth.Kind(su.Kind), PubKeyFP: fp, StoreID: su.ID}
 	}
 
@@ -258,8 +269,9 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	return hub.New(u, ctx, a.registry), []tea.ProgramOption{tea.WithAltScreen()}
 }
 
-// handleJoin registers the visitor's key, prints instructions, disconnects
-// ("it just shows the message and kicks them off the server").
+// handleJoin runs onboarding interactively in one SSH session: register the
+// visitor's key, confirm their email with a code we email them, then offer the
+// $10 lifetime Premium membership (CoinPay). It then disconnects.
 func (a *app) handleJoin(s ssh.Session) {
 	fp := auth.Fingerprint(s.PublicKey())
 	if fp == "" {
@@ -278,68 +290,232 @@ func (a *app) handleJoin(s ssh.Session) {
 	}
 	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "join")
 
-	// Collect an email and send a confirmation link. The connecting key is the
-	// "uploaded" public key; this prompt adds (or refreshes) the email and
-	// re-issues verification. Requires an interactive session (ssh join@host).
-	wish.Print(s, "  Email (for account confirmation): ")
-	line, _ := bufio.NewReader(s).ReadString('\n')
-	email := strings.TrimSpace(line)
-
-	confirm := "  confirm   no email captured — re-run from an interactive terminal: ssh join@" + a.host
-	if validEmail(email) {
-		token := randToken()
-		if err := a.st.SetEmailVerification(u.ID, email, token); err != nil {
-			log.Error("set verification", "err", err)
-			confirm = "  confirm   error saving email; please retry"
-		} else {
-			url := "https://" + a.host + "/verify?token=" + token
-			switch {
-			case !a.mail.Configured():
-				log.Warn("smtp not configured — confirmation link not emailed", "email", email, "url", url)
-				confirm = "  confirm   email is not configured on this host yet; an admin must verify you"
-			case a.mail.Send(email, "Confirm your AgentBBS account", verifyEmailBody(u.Name, url)) != nil:
-				confirm = "  confirm   couldn't send the email; please retry or contact an admin"
-			default:
-				confirm = "  confirm   check " + email + " for a confirmation link to activate your account"
-			}
-		}
-	} else if email != "" {
-		confirm = "  confirm   that doesn't look like an email — re-run: ssh join@" + a.host
-	}
-
-	ref := payments.Reference("pod", fp)
+	in := bufio.NewReader(s)
 	wish.Println(s, "\n"+strings.Join([]string{
-		"",
-		"  Welcome to AgentBBS — you're registered.",
+		"  Welcome to AgentBBS — let's set up your account.",
 		"",
 		"  account   " + u.Name,
 		"  key       " + fp,
-		confirm,
-		"",
-		"  BBS hub        ssh " + u.Name + "@" + a.host,
-		"  Guest hub      ssh bbs@" + a.host,
-		"",
-		"  Personal pod (" + payments.PodPriceLabel + ", via CoinPay):",
-		"    1. pay:    " + payments.PayCommand(ref),
-		"    2. enter:  ssh pod@" + a.host,
-		"",
 	}, "\n"))
+
+	// 1) email -> emailed code -> enter code. A verified account is a free
+	// member: it gets a Docker pod (ssh pod@) and a /~name homepage.
+	if !u.EmailVerified {
+		if !a.verifyEmailInteractive(s, in, &u) {
+			_ = s.Exit(1)
+			return
+		}
+		a.notifySignup(u)
+	}
+
+	// Every verified member gets a homepage at https://<host>/~<name>.
+	seedHomepage(filepath.Join(a.dataDir, "users", u.Name, "public_html"), u.Name, a.host)
+
+	wish.Println(s, "\n"+strings.Join([]string{
+		"  You're in — free membership includes:",
+		"    pod       ssh pod@" + a.host + "        your own Linux pod",
+		"    hub       ssh " + u.Name + "@" + a.host,
+		"    homepage  https://" + a.host + "/~" + u.Name,
+	}, "\n"))
+
+	// 2) Premium ($10 lifetime): personal @host email + custom domains.
+	a.offerPremium(s, &u)
 	_ = s.Exit(0)
 }
 
-// verifyEmailBody is the plain-text confirmation email.
-func verifyEmailBody(name, url string) string {
+// verifyEmailInteractive collects an email, emails a 6-digit code, and prompts
+// the visitor to type it back. It updates *u and returns true once verified.
+func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.User) bool {
+	var email string
+	for tries := 0; tries < 3; tries++ {
+		wish.Print(s, "\n  Email: ")
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		if e := strings.TrimSpace(line); validEmail(e) {
+			email = e
+			break
+		}
+		wish.Println(s, "  that doesn't look like an email — try again.")
+	}
+	if email == "" {
+		wish.Println(s, "  No valid email — run  ssh join@"+a.host+"  again when ready.")
+		return false
+	}
+
+	code := randCode()
+	if err := a.st.SetEmailVerification(u.ID, email, code); err != nil {
+		log.Error("set verification", "err", err)
+		wish.Println(s, "  couldn't save your email; please retry.")
+		return false
+	}
+	switch {
+	case a.mail.Configured():
+		if err := a.mail.Send(email, "Your AgentBBS confirmation code", verifyCodeEmailBody(u.Name, code)); err != nil {
+			log.Error("send code", "err", err)
+			wish.Println(s, "  couldn't email the code; please retry or contact an admin.")
+			return false
+		}
+		wish.Println(s, "  Sent a 6-digit code to "+email+".")
+	default:
+		// No SMTP configured yet: show the code in-session so the box is still
+		// usable. Set AGENTBBS_SMTP_* in production so codes are emailed instead.
+		log.Warn("smtp not configured — showing join code in session", "email", email)
+		wish.Println(s, "  (email isn't configured on this host yet — here is your code)")
+		wish.Println(s, "  code: "+code)
+	}
+
+	for tries := 0; tries < 3; tries++ {
+		wish.Print(s, "  Enter the code: ")
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		vu, ok, err := a.st.ConfirmEmailCode(u.ID, strings.TrimSpace(line))
+		if err != nil {
+			log.Error("confirm code", "err", err)
+			wish.Println(s, "  verification error; please retry.")
+			return false
+		}
+		if ok {
+			*u = vu
+			wish.Println(s, "  Email confirmed ✓")
+			return true
+		}
+		wish.Println(s, "  that code didn't match — try again.")
+	}
+	wish.Println(s, "  Too many attempts — run  ssh join@"+a.host+"  again for a fresh code.")
+	return false
+}
+
+// ensurePremium upgrades *u to premium if its CoinPay charge has settled,
+// provisioning the member's @host email alias on the transition. It is silent
+// (no session output) so it is safe to call from the hub. Returns the current
+// premium state.
+func (a *app) ensurePremium(u *store.User) bool {
+	if u.Premium {
+		return true
+	}
+	ref := payments.PremiumReference(u.PubKeyFP)
+	if paid, checked := payments.VerifyPremium(ref); !checked || !paid {
+		return false
+	}
+	if err := a.st.GrantPremium(u.ID, ref); err != nil {
+		log.Error("grant premium", "err", err)
+		return false
+	}
+	u.Premium = true
+	// Create their <name>@host alias forwarding to the email they verified.
+	if a.fe.Configured() && u.Email != "" {
+		if err := a.fe.CreateAlias(u.Name, u.Email); err != nil {
+			log.Error("forwardemail alias", "err", err, "alias", a.fe.Address(u.Name))
+		}
+	}
+	return true
+}
+
+// showPremiumWelcome prints a premium member's perks: their personal email,
+// where it forwards, the webmail URL, and custom domains.
+func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
+	lines := []string{
+		"",
+		"  ★ Premium — thanks! Your perks:",
+		"",
+		"  email      " + a.fe.Address(u.Name),
+		"  forwards   " + u.Email,
+	}
+	if url := a.fe.WebmailURL(); url != "" {
+		lines = append(lines, "  webmail    "+url)
+	}
+	lines = append(lines,
+		"  domains    ssh domain@"+a.host+" add <yourdomain.com>",
+		"",
+	)
+	wish.Println(s, strings.Join(lines, "\n"))
+}
+
+// offerPremium pitches the $10 lifetime membership — a personal @host email and
+// custom domains. When CoinPay can mint a charge in-session it shows the exact
+// amount and deposit address; otherwise it falls back to a pay command.
+// Non-blocking: the member pays out of band and perks unlock on their next
+// connect (or re-running join@).
+func (a *app) offerPremium(s ssh.Session, u *store.User) {
+	// Maybe they already paid (e.g. re-ran join@ after paying).
+	if a.ensurePremium(u) {
+		a.showPremiumWelcome(s, *u)
+		return
+	}
+	ref := payments.PremiumReference(u.PubKeyFP)
+
+	lines := []string{
+		"",
+		"  Upgrade to Premium — " + payments.PremiumPriceLabel + ", one-time:",
+		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you)",
+		"    • custom domains   point yourdomain.com at your homepage",
+		"",
+	}
+	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
+		amount := "$" + payments.PremiumAmount() + " " + payments.PremiumCurrency()
+		if c.CryptoAmount != "" {
+			cur := c.Currency
+			if cur == "" {
+				cur = strings.ToUpper(payments.PremiumBlockchain())
+			}
+			amount += "  (≈ " + c.CryptoAmount + " " + cur + ")"
+		}
+		lines = append(lines,
+			"  amount    "+amount,
+			"  send to   "+c.Address,
+		)
+		if c.QR != "" {
+			lines = append(lines, "  qr        "+c.QR)
+		}
+	} else {
+		if err != nil {
+			log.Error("create premium charge", "err", err)
+		}
+		lines = append(lines, "  pay:   "+payments.PremiumPayCommand(ref))
+	}
+	lines = append(lines,
+		"",
+		"  Perks unlock once payment confirms — then re-run: ssh join@"+a.host,
+		"",
+	)
+	wish.Println(s, strings.Join(lines, "\n"))
+}
+
+// notifySignup emails the operator the details of a newly verified signup.
+// No-op when SMTP isn't configured. Subject is "bbs" per the operator's filter.
+func (a *app) notifySignup(u store.User) {
+	to := env("AGENTBBS_SIGNUP_NOTIFY", "anthony@profullstack.com")
+	if !a.mail.Configured() || to == "" {
+		return
+	}
+	body := "New AgentBBS signup\n\n" +
+		"  username:  " + u.Name + "\n" +
+		"  email:     " + u.Email + "\n" +
+		"  key:       " + u.PubKeyFP + "\n" +
+		"  homepage:  https://" + a.host + "/~" + u.Name + "\n"
+	if err := a.mail.Send(to, "bbs", body); err != nil {
+		log.Error("signup notify", "err", err, "to", to)
+	}
+}
+
+// verifyCodeEmailBody is the plain-text confirmation-code email.
+func verifyCodeEmailBody(name, code string) string {
 	return "Hi " + name + ",\n\n" +
-		"Confirm your AgentBBS account by opening this link:\n\n" +
-		"  " + url + "\n\n" +
+		"Your AgentBBS confirmation code is:\n\n" +
+		"  " + code + "\n\n" +
+		"Enter it in your open  ssh join@  session to activate your account.\n" +
 		"If you didn't request this, you can ignore this email.\n"
 }
 
-// randToken returns a 128-bit hex token for email confirmation.
-func randToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+// randCode returns a 6-digit numeric confirmation code.
+func randCode() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(b[:])%1000000)
 }
 
 // validEmail is a deliberately loose check: one @, a dotted domain, no spaces.
@@ -399,6 +575,18 @@ func (a *app) handleDomain(s ssh.Session) {
 	u, found, err := a.st.UserByFingerprint(fp)
 	if err != nil || !found {
 		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	// Custom domains are a Premium perk ($10 lifetime). ensurePremium also
+	// catches a payment that settled since their last visit.
+	if !a.ensurePremium(&u) {
+		wish.Println(s, strings.Join([]string{
+			"",
+			"  Custom domains are a Premium feature (" + payments.PremiumPriceLabel + ", one-time).",
+			"  Upgrade:  ssh join@" + a.host,
+			"",
+		}, "\n"))
 		_ = s.Exit(1)
 		return
 	}
@@ -486,32 +674,13 @@ func (a *app) handlePod(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
-	// Email must be confirmed before paid features unlock (set
-	// AGENTBBS_REQUIRE_VERIFIED_EMAIL=0 to disable on a dev host).
+	// Pods are a FREE member benefit — the only gate is a confirmed email, so
+	// every registered member gets their own Docker pod (set
+	// AGENTBBS_REQUIRE_VERIFIED_EMAIL=0 to drop even that on a dev host).
 	if env("AGENTBBS_REQUIRE_VERIFIED_EMAIL", "1") != "0" && !u.EmailVerified {
-		wish.Println(s, "  Confirm your email first — run: ssh join@"+a.host+"  (then open the link we email you).")
+		wish.Println(s, "  Confirm your email first — run: ssh join@"+a.host+"  (we email you a code to enter).")
 		_ = s.Exit(1)
 		return
-	}
-
-	until, ok, _ := a.st.PodPaidUntil(u.ID)
-	if !ok || time.Now().After(until) {
-		// One verification attempt against the coinpay CLI before refusing.
-		ref := payments.Reference("pod", fp)
-		if paid, checked := payments.Verify(ref); checked && paid {
-			_ = a.st.GrantPod(u.ID, time.Now().Add(payments.PodTerm), ref)
-		} else {
-			wish.Println(s, strings.Join([]string{
-				"",
-				"  Pod membership required (" + payments.PodPriceLabel + ").",
-				"",
-				"  pay:   " + payments.PayCommand(ref),
-				"  then:  ssh pod@" + a.host,
-				"",
-			}, "\n"))
-			_ = s.Exit(1)
-			return
-		}
 	}
 
 	if a.pods == nil {
