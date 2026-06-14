@@ -98,7 +98,7 @@ func main() {
 		return
 	}
 
-	host := env("AGENTBBS_HOST", "profullstack.com")
+	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
 	if fe.Domain == "" {
 		fe.Domain = host // personal addresses live on the BBS host by default
@@ -397,11 +397,14 @@ func (a *app) ensurePremium(u *store.User) bool {
 	if u.Premium {
 		return true
 	}
-	ref := payments.PremiumReference(u.PubKeyFP)
-	if paid, checked := payments.VerifyPremium(ref); !checked || !paid {
+	// Verify the CoinPay payment we created for them (if any) has settled.
+	if u.PremiumPayID == "" {
 		return false
 	}
-	if err := a.st.GrantPremium(u.ID, ref); err != nil {
+	if paid, checked := payments.VerifyPremium(u.PremiumPayID); !checked || !paid {
+		return false
+	}
+	if err := a.st.GrantPremium(u.ID, u.PremiumPayID); err != nil {
 		log.Error("grant premium", "err", err)
 		return false
 	}
@@ -456,6 +459,10 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		"",
 	}
 	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
+		// Remember the payment id so a later connect can confirm settlement.
+		if err := a.st.SetPremiumPayment(u.ID, c.ID); err != nil {
+			log.Error("store premium payment id", "err", err)
+		}
 		amount := "$" + payments.PremiumAmount() + " " + payments.PremiumCurrency()
 		if c.CryptoAmount != "" {
 			cur := c.Currency
@@ -475,7 +482,7 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		if err != nil {
 			log.Error("create premium charge", "err", err)
 		}
-		lines = append(lines, "  pay:   "+payments.PremiumPayCommand(ref))
+		lines = append(lines, "  Payment is temporarily unavailable — please try again shortly.")
 	}
 	lines = append(lines,
 		"",

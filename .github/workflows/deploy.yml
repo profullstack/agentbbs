@@ -51,11 +51,18 @@ jobs:
           # Deploy whichever branch was pushed (main or master), so a rename
           # "just works". For workflow_dispatch this is the chosen branch.
           DEPLOY_BRANCH: ${{ github.ref_name }}
+          # App secrets injected into the droplet's env file by setup.sh.
+          # GitHub masks these in logs; setup.sh upserts them idempotently.
+          COINPAY_API_KEY: ${{ secrets.COINPAY_API_KEY }}
+          COINPAY_MERCHANT_ID: ${{ secrets.COINPAY_MERCHANT_ID }}
         run: |
           ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
               -o BatchMode=yes -o StrictHostKeyChecking=yes \
               "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "sudo -n env BRANCH=$(printf %q "$DEPLOY_BRANCH") bash -s" <<'REMOTE'
+              "sudo -n env BRANCH=$(printf %q "$DEPLOY_BRANCH") \
+                 COINPAY_API_KEY=$(printf %q "$COINPAY_API_KEY") \
+                 COINPAY_MERCHANT_ID=$(printf %q "$COINPAY_MERCHANT_ID") \
+                 bash -s" <<'REMOTE'
           set -euo pipefail
           REPO=https://github.com/profullstack/agentbbs.git
           BRANCH="${BRANCH:-main}"
@@ -67,7 +74,10 @@ jobs:
           fi
           git -C "$SRC" fetch --depth 1 origin "$BRANCH"
           git -C "$SRC" reset --hard "origin/$BRANCH"
-          exec env BRANCH="$BRANCH" "$SRC/setup.sh"
+          exec env BRANCH="$BRANCH" \
+            COINPAY_API_KEY="${COINPAY_API_KEY:-}" \
+            COINPAY_MERCHANT_ID="${COINPAY_MERCHANT_ID:-}" \
+            "$SRC/setup.sh"
           REMOTE
 
       - name: Smoke-test that agentbbs serves :22
