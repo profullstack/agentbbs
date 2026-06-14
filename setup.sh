@@ -264,6 +264,16 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 
 # Agent chat backend (agent@), stdin->stdout, e.g. "claude -p":
 # AGENTBBS_AGENT_CMD=
+
+# qrypt.chat anonymous-invite issuer (docs/qrypt-invites.md). Members mint a
+# signed single-use token here that qrypt.chat redeems into an anon account.
+# Run \`agentbbs qrypt-issuer-keygen\` once: paste the seed below, register the
+# public key in qrypt.chat's invite_issuers row. Without the key, minting is off.
+# AGENTBBS_QRYPT_ISSUER_KEY=<base64 ed25519 seed from qrypt-issuer-keygen>
+# AGENTBBS_QRYPT_ISSUER_ID=agentbbs
+# AGENTBBS_QRYPT_INVITE_TTL=168h
+# AGENTBBS_QRYPT_REDEEM_URL=https://qrypt.chat/anon?invite=
+# AGENTBBS_QRYPT_INVITE_QUOTA=5
 ENV
   chmod 0640 "$ENV_DIR/agentbbs.env"
 fi

@@ -19,6 +19,8 @@
 //	agentbbs map-domain DOMAIN NAME       map a custom domain to a homepage
 //	agentbbs unmap-domain DOMAIN NAME     remove a custom-domain mapping
 //	agentbbs mint-token NAME             issue a WebSocket API token for NAME
+//	agentbbs qrypt-invite NAME           mint a qrypt.chat anonymous invite for NAME
+//	agentbbs qrypt-issuer-keygen         print a fresh qrypt issuer seed + public key
 package main
 
 import (
@@ -64,6 +66,7 @@ import (
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
 
 func env(k, def string) string {
@@ -121,6 +124,14 @@ func main() {
 		mintToken(st, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "qrypt-invite" {
+		qryptInviteCmd(st, os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
+		qryptIssuerKeygen()
+		return
+	}
 
 	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
@@ -141,7 +152,7 @@ func main() {
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
