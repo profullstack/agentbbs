@@ -434,9 +434,15 @@ func (a *app) handleJoin(s ssh.Session) {
 		return
 	}
 	if !found {
-		// New key: let the visitor pick their own handle before we create the
-		// account (a returning key keeps the name it already chose).
+		// New key: show the acceptable-use terms and require acceptance before
+		// creating the account, then let the visitor pick their own handle (a
+		// returning key keeps the name it already chose).
 		wish.Println(s, "\n  Welcome to AgentBBS — let's set up your account.")
+		if !a.acceptTerms(s, in) {
+			wish.Println(s, "\n  You must accept the terms to register — no account was created.")
+			_ = s.Exit(1)
+			return
+		}
 		if u, err = a.registerNewMember(s, in, fp); err != nil {
 			wish.Fatalln(s, "registration error: "+err.Error())
 			return
@@ -472,6 +478,33 @@ func (a *app) handleJoin(s ssh.Session) {
 	// 2) Founding Lifetime ($99 one-time): personal @host email + custom domains.
 	a.offerPremium(s, &u)
 	_ = s.Exit(0)
+}
+
+// acceptTerms shows the acceptable-use terms and requires the visitor to type
+// "agree" before an account is created. AgentBBS is for lawful use only; illegal
+// activity is grounds for an immediate, permanent ban. Returns true on acceptance.
+func (a *app) acceptTerms(s ssh.Session, in *bufio.Reader) bool {
+	wish.Println(s, "\n"+strings.Join([]string{
+		"  Terms of use — please read before you join:",
+		"    • AgentBBS is for LAWFUL use only. Illegal activity is not permitted",
+		"      and will result in an immediate, permanent ban — and may be reported",
+		"      to the relevant authorities.",
+		"    • Don't abuse the service, other members, or the shared infrastructure,",
+		"      and don't use it to harm others.",
+		"    • You are responsible for everything you — and any agents you run —",
+		"      do here.",
+	}, "\n"))
+	wish.Print(s, "\n  Type \"agree\" to accept and continue: ")
+	line, err := readLine(s, in)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "agree", "i agree", "agreed", "yes", "y":
+		return true
+	default:
+		return false
+	}
 }
 
 // registerNewMember asks the visitor to choose a username, then creates their
