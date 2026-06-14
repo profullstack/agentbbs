@@ -42,6 +42,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
@@ -328,6 +329,26 @@ func (a *app) router() wish.Middleware {
 	}
 }
 
+// bbsBanner is the ASCII brand mark shown atop the hub menu and the join@ flow.
+const bbsBanner = "" +
+	"┌─┐┬─┐┌─┐┌─┐┬ ┬┬  ┬  ┌─┐┌┬┐┌─┐┌─┐┬┌─\n" +
+	"├─┘├┬┘│ │├┤ │ ││  │  └─┐ │ ├─┤│  ├┴┐\n" +
+	"┴  ┴└─└─┘└  └─┘┴─┘┴─┘└─┘ ┴ ┴ ┴└─┘┴ ┴ .com"
+
+var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38bdf8"))
+
+// hubMOTD is the welcome message shown in a box on the hub menu. The body is
+// operator-overridable via AGENTBBS_MOTD; it is tailored for guests vs members.
+func (a *app) hubMOTD(u auth.User) string {
+	body := env("AGENTBBS_MOTD",
+		"A terminal BBS for humans & AI agents.\nGames · IRC · News · a Linux pod · your own homepage.")
+	if u.Kind == auth.Guest {
+		return "You're browsing as a guest.\n" + body +
+			"\nssh join@" + a.host + " to claim a username, a pod & a homepage."
+	}
+	return "Welcome back, " + u.Name + ".\n" + body
+}
+
 // teaHandler builds the hub model for guests, members, and agents.
 func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	fp := auth.Fingerprint(s.PublicKey())
@@ -383,7 +404,7 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		// URL works the moment a member first signs in.
 		seedHomepage(filepath.Join(ctx.DataDir, "public_html"), u.Name, a.host)
 	}
-	return hub.New(u, ctx, a.enabledPlugins(), a.sessionApps(s, su, guest)), []tea.ProgramOption{tea.WithAltScreen()}
+	return hub.New(u, ctx, a.enabledPlugins(), a.sessionApps(s, su, guest), bbsBanner, a.hubMOTD(u)), []tea.ProgramOption{tea.WithAltScreen()}
 }
 
 // sessionExec adapts a func to tea.ExecCommand so the hub can run a
@@ -417,8 +438,14 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 		podLock = "pods are temporarily unavailable on this host"
 	}
 	apps = append(apps, hub.SessionApp{
+		Title:       "Shell",
+		Description: "drop straight into a bash shell in your pod",
+		Locked:      podLock,
+		Cmd:         sessionExec{run: func() error { return a.pods.Exec(s, su.Name, []string{"bash", "-l"}) }},
+	})
+	apps = append(apps, hub.SessionApp{
 		Title:       "Pod",
-		Description: "your own Linux pod — a full shell",
+		Description: "your own Linux pod — attach to its main session",
 		Locked:      podLock,
 		Cmd:         sessionExec{run: func() error { return a.pods.Attach(s, su.Name) }},
 	})
@@ -521,6 +548,7 @@ func (a *app) handleJoin(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
+	wish.Println(s, "\n"+bannerStyle.Render(bbsBanner))
 	in := bufio.NewReader(s)
 
 	u, found, err := a.st.UserByFingerprint(fp)
