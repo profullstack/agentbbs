@@ -34,12 +34,32 @@ HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ emai
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
+SKIP_BUILD="${SKIP_BUILD:-0}"       # set 1 to use prebuilt /usr/local/bin/{agentbbs,ascii-live} (tiny droplets can't compile)
+SWAP_SIZE="${SWAP_SIZE:-3G}"        # swapfile size added on low-RAM hosts (set 0 to skip)
 SELF_UPDATE="${SELF_UPDATE:-1}"     # set 0 to skip the autonomous self-update systemd timer
 SELF_UPDATE_INTERVAL="${SELF_UPDATE_INTERVAL:-15min}"  # how often the box polls origin for new commits
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ensure_swap adds a swapfile on low-RAM hosts so the Go build (and runtime)
+# aren't OOM-killed. No-op when swap already exists, RAM is ample, or SWAP_SIZE=0.
+ensure_swap() {
+  [ "${SWAP_SIZE:-0}" = "0" ] && return 0
+  [ "$(swapon --show=NAME --noheadings 2>/dev/null | wc -l)" -gt 0 ] && return 0
+  local kb; kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+  [ "${kb:-0}" -ge 3000000 ] && return 0   # >= ~3GB RAM: skip
+  log "low RAM ($(( ${kb:-0}/1024 ))MB) — adding ${SWAP_SIZE} swap at /swapfile"
+  if [ ! -f /swapfile ]; then
+    fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null \
+      || dd if=/dev/zero of=/swapfile bs=1M count="$(numfmt --from=iec "$SWAP_SIZE" | awk '{print int($1/1048576)}')" status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+  fi
+  swapon /swapfile 2>/dev/null || true
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+}
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo ./setup.sh)"
 
@@ -65,7 +85,7 @@ log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-  git ca-certificates curl ufw ffmpeg \
+  git ca-certificates curl ufw ffmpeg unzip \
   podman uidmap slirp4netns fuse-overlayfs \
   debian-keyring debian-archive-keyring apt-transport-https >/dev/null
 
@@ -140,9 +160,17 @@ if [ "$FETCH_ASSETS" = "1" ] && [ -x "$SRC_DIR/scripts/fetch-assets.sh" ]; then
   ( cd "$SRC_DIR" && ./scripts/fetch-assets.sh ) || warn "asset fetch failed; arcade may be limited"
 fi
 
-log "building binaries"
-( cd "$SRC_DIR" && go build -o /usr/local/bin/agentbbs ./cmd/agentbbs )
-( cd "$SRC_DIR" && go build -o /usr/local/bin/ascii-live ./cmd/ascii-live )
+# Add swap on tiny droplets before the build (and for runtime headroom).
+ensure_swap
+
+if [ "$SKIP_BUILD" = "1" ]; then
+  log "SKIP_BUILD=1 — using prebuilt /usr/local/bin/{agentbbs,ascii-live}"
+  [ -x /usr/local/bin/agentbbs ] || die "SKIP_BUILD=1 but /usr/local/bin/agentbbs is missing — copy it first"
+else
+  log "building binaries (go build -p=1 to cap peak memory)"
+  ( cd "$SRC_DIR" && go build -p=1 -o /usr/local/bin/agentbbs ./cmd/agentbbs )
+  ( cd "$SRC_DIR" && go build -p=1 -o /usr/local/bin/ascii-live ./cmd/ascii-live )
+fi
 # Pre-pull the pod base image as the service user so first pod launch is fast.
 sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$SVC_UID" \
   podman pull -q "$POD_IMAGE" >/dev/null 2>&1 || warn "could not pre-pull $POD_IMAGE (pods will pull on first use)"
