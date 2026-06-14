@@ -55,7 +55,7 @@ Configuration (env):
 | `AGENTBBS_HOST` | `bbs.profullstack.com` | hostname shown in messages |
 | `AGENTBBS_ADMINS` | unset | operator account names for `admin@` (comma/space-separated) — see [docs/admin.md](docs/admin.md) |
 | `AGENTBBS_SANDBOX` | `auto` | `bwrap` / `prlimit` / `none` |
-| `AGENTBBS_POD_IMAGE` | `debian:stable-slim` | pod base image |
+| `AGENTBBS_POD_IMAGE` | `ubuntu:24.04` | pod base image |
 | `AGENTBBS_POD_MEM` / `AGENTBBS_POD_CPUS` | `512m` / `1` | pod caps |
 | `AGENTBBS_POD_KEEP` | unset | `1` keeps pods running after disconnect |
 | `COINPAY_API_KEY` | unset | CoinPay API key (Premium payments) |
@@ -69,6 +69,21 @@ Ops:
 ```
 
 ## Deploy
+
+### Hosting requirements
+
+- **RAM: 1 GB minimum, 2 GB recommended.** The core BBS (SSH hub, arcade, web)
+  is light, but each member gets a **Docker pod** (a full container), so RAM is
+  the real constraint once people use pods.
+- **512 MB is marginal** — it runs, but idles into swap and can't host more than
+  a pod or two. On a 512 MB box also lower `AGENTBBS_POD_MEM` (e.g. `256m`).
+- **Building needs ~1.5 GB+** (LiveKit/redis/modernc deps). Tiny droplets can't
+  compile on-box — build elsewhere and copy the binaries, then run
+  `SKIP_BUILD=1 ./setup.sh` (it uses the prebuilt `/usr/local/bin/{agentbbs,ascii-live}`
+  and adds swap automatically).
+- **OS: Ubuntu 24.04** (handles socket-activated `sshd` when moving admin to `:2202`).
+
+### Continuous deploy
 
 The production host (`bbs.profullstack.com`) is provisioned by the idempotent
 [`setup.sh`](setup.sh) and stays current automatically:
