@@ -28,6 +28,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -313,6 +314,41 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	return hub.New(u, ctx, a.enabledPlugins()), []tea.ProgramOption{tea.WithAltScreen()}
 }
 
+// readLine reads one line of interactive input from an SSH session that is
+// running under a client-allocated PTY. That detail is the whole reason this
+// helper exists: when the client requests a PTY (which `ssh join@host` does by
+// default) it puts its OWN terminal into raw mode, so it sends raw keystrokes —
+// Enter arrives as '\r', not '\n' — and does NO local echo. bufio.ReadString
+// ('\n') therefore blocks forever (the '\n' never comes) and the user sees a
+// dead prompt. So we read byte-by-byte, accept either '\r' or '\n' as the line
+// terminator, handle backspace, and echo printable bytes back ourselves.
+func readLine(s ssh.Session, in *bufio.Reader) (string, error) {
+	var b []byte
+	for {
+		c, err := in.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch c {
+		case '\r', '\n':
+			wish.Print(s, "\r\n")
+			return string(b), nil
+		case 0x03, 0x04: // Ctrl-C / Ctrl-D: treat as abort
+			return "", io.EOF
+		case 0x7f, '\b': // DEL / backspace: erase last char on screen too
+			if len(b) > 0 {
+				b = b[:len(b)-1]
+				wish.Print(s, "\b \b")
+			}
+		default:
+			if c >= 0x20 { // printable byte; ignore other control codes
+				b = append(b, c)
+				wish.Print(s, string(c))
+			}
+		}
+	}
+}
+
 // handleJoin runs onboarding interactively in one SSH session: register the
 // visitor's key, confirm their email with a code we email them, then offer the
 // $10 lifetime Premium membership (CoinPay). It then disconnects.
@@ -391,7 +427,7 @@ func (a *app) registerNewMember(s ssh.Session, in *bufio.Reader, fp string) (sto
 
 	for tries := 0; tries < 5; tries++ {
 		wish.Print(s, "\n  Username ["+def+"]: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return store.User{}, err
 		}
@@ -426,7 +462,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 	var email string
 	for tries := 0; tries < 3; tries++ {
 		wish.Print(s, "\n  Email: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return false
 		}
@@ -465,7 +501,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 
 	for tries := 0; tries < 3; tries++ {
 		wish.Print(s, "  Enter the code: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return false
 		}
