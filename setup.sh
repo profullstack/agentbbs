@@ -87,7 +87,13 @@ apt-get update -qq
 apt-get install -y -qq \
   git ca-certificates curl ufw ffmpeg unzip \
   podman uidmap slirp4netns fuse-overlayfs \
+  tor torsocks \
   debian-keyring debian-archive-keyring apt-transport-https >/dev/null
+
+# Tor SOCKS proxy for the tor-url@/tor@/tor-irc@ routes. Ships listening on
+# 127.0.0.1:9050 by default; keep it loopback-only (never expose it).
+log "enabling tor (SOCKS 127.0.0.1:9050)"
+systemctl enable --now tor >/dev/null 2>&1 || warn "tor service not enabled — tor-url@ will be unavailable"
 
 # yt-dlp from pip is fresher than apt; fall back to apt if pip is unavailable.
 if ! command -v yt-dlp >/dev/null; then
