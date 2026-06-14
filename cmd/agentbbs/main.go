@@ -56,6 +56,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
+	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -265,6 +266,8 @@ func (a *app) router() wish.Middleware {
 				a.handleTorIRC(s)
 			case auth.IsTorName(user):
 				a.handleTorCmd(s)
+			case auth.IsIRCName(user):
+				a.handleIRC(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -935,6 +938,48 @@ func (a *app) handleTorIRC(s ssh.Session) {
 	if err := a.pods.Exec(s, u.Name, tor.IRCArgv(args[0])); err != nil {
 		wish.Println(s, "tor-irc error: "+err.Error())
 		_ = s.Exit(1)
+	}
+}
+
+// handleIRC drops a member into the BBS's own (members-only) IRC network using
+// an in-process client: it authenticates to Ergo over SASL as the member and
+// runs a Bubble Tea TUI. Free for any registered member; needs a PTY. Distinct
+// from tor-irc@ (a client for remote servers over Tor).
+func (a *app) handleIRC(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "irc@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "the IRC network is members-only — register first: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "irc")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	addr := strings.TrimSpace(os.Getenv("AGENTBBS_IRC_ADDR"))
+	if addr == "" {
+		addr = irc.DefaultAddr
+	}
+	log.Info("irc connect", "user", u.Name, "addr", addr)
+	c, err := irc.Dial(s.Context(), addr, u.Name)
+	if err != nil {
+		wish.Println(s, "irc: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_ = c.Join(irc.DefaultChannel)
+	if err := irc.Run(s, c); err != nil {
+		wish.Println(s, "irc: "+err.Error())
 	}
 }
 
