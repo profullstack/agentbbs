@@ -52,6 +52,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/profullstack/agentbbs/internal/auth"
+	"github.com/profullstack/agentbbs/internal/brand"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/forgejo"
@@ -330,12 +331,9 @@ func (a *app) router() wish.Middleware {
 }
 
 // bbsBanner is the ASCII brand mark shown atop the hub menu and the join@ flow.
-const bbsBanner = "" +
-	"┌─┐┬─┐┌─┐┌─┐┬ ┬┬  ┬  ┌─┐┌┬┐┌─┐┌─┐┬┌─\n" +
-	"├─┘├┬┘│ │├┤ │ ││  │  └─┐ │ ├─┤│  ├┴┐\n" +
-	"┴  ┴└─└─┘└  └─┘┴─┘┴─┘└─┘ ┴ ┴ ┴└─┘┴ ┴ .com"
+var bbsBanner = brand.Logo()
 
-var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38bdf8"))
+var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11d2a"))
 
 // hubMOTD is the welcome message shown in a box on the hub menu. The body is
 // operator-overridable via AGENTBBS_MOTD; it is tailored for guests vs members.
