@@ -47,6 +47,8 @@ ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
 FORGEJO="${FORGEJO:-1}"                  # set 0 to skip the AgentGit Forgejo backend (git.${DOMAIN#*.})
 GIT_DOMAIN="${GIT_DOMAIN:-git.${DOMAIN#*.}}"  # AgentGit host (default: git.<root-of-DOMAIN>, e.g. git.profullstack.com)
 FORGEJO_VERSION="${FORGEJO_VERSION:-11.0.1}"  # Forgejo release to install
+MAIL="${MAIL:-1}"                   # set 0 to skip the co-located Mailu mail stack (mail.${DOMAIN#*.})
+MAIL_DOMAIN="${MAIL_DOMAIN:-mail.${DOMAIN#*.}}"  # mail host (default: mail.<root-of-DOMAIN>, e.g. mail.profullstack.com)
 FORGEJO_HTTP_ADDR="${FORGEJO_HTTP_ADDR:-127.0.0.1:3000}"  # Forgejo loopback HTTP (Caddy fronts it)
 FORGEJO_DATA="${FORGEJO_DATA:-/var/lib/forgejo}"  # Forgejo state dir (repos, db)
 FORGEJO_ADMIN_USER="${FORGEJO_ADMIN_USER:-agentgit-admin}"  # Forgejo admin used to provision members
@@ -502,6 +504,20 @@ ${IRC_DOMAIN} {
 "
 fi
 
+# Mail site (${MAIL_DOMAIN}): Caddy serving this host obtains the LE cert that
+# Mailu reuses for SMTP/IMAP TLS (deploy/mailu/refresh-certs.sh copies it). It
+# also fronts the loopback Roundcube webmail. Needs A record ${MAIL_DOMAIN} ->
+# this host. Webmail is the only member-facing mail surface. Omitted when MAIL=0.
+MAIL_SITE=""
+if [ "$MAIL" = "1" ]; then
+  MAIL_SITE="
+${MAIL_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+}
+"
+fi
+
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -545,7 +561,7 @@ ${DOMAIN} {
 		file_server
 	}
 }
-${GIT_SITE}${NEWS_SITE}${IRC_SITE}
+${GIT_SITE}${NEWS_SITE}${IRC_SITE}${MAIL_SITE}
 # Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
 # *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
 # ask endpoint confirms <name> is a registered member, so random subdomains
@@ -921,6 +937,61 @@ UNIT
   fi
 else
   systemctl disable --now forgejo >/dev/null 2>&1 || true
+fi
+
+# ---- 9e. Mailu mail stack (co-located mail.${DOMAIN#*.}) --------------------
+# Self-hosted Postfix+Dovecot+Roundcube+rspamd via Docker Compose. Mailu owns
+# the mail ports; Caddy fronts the loopback webmail and supplies the TLS cert
+# (TLS_FLAVOR=mail). agentbbs reads/sends on behalf of paid members. Full setup,
+# DNS, and the gateway master user: docs/mail.md. Disable with MAIL=0.
+MAILU_DIR="${SRC_DIR}/deploy/mailu"
+if [ "$MAIL" = "1" ]; then
+  log "configuring Mailu mail stack (${MAIL_DOMAIN})"
+  # Tell agentbbs how to reach the mailbox backend (master user/pass are secrets
+  # the operator sets; see docs/mail.md).
+  upsert_env AGENTBBS_MAIL_DOMAIN "${MAIL_DOMAIN}"
+  upsert_env AGENTBBS_MAIL_IMAP_ADDR "${MAIL_DOMAIN}:993"
+  upsert_env AGENTBBS_MAIL_SMTP_ADDR "127.0.0.1:25"
+
+  # Cert refresher: copy Caddy's mail cert into Mailu on renewal (like news/IRC).
+  install -m 0755 "${MAILU_DIR}/refresh-certs.sh" /usr/local/bin/agentbbs-mailu-certs
+  cat > /etc/systemd/system/agentbbs-mailu-certs.service <<UNIT
+[Unit]
+Description=Refresh Mailu TLS cert from Caddy for ${MAIL_DOMAIN}
+
+[Service]
+Type=oneshot
+Environment=DOMAIN=${DOMAIN#*.}
+Environment=MAIL_HOST=${MAIL_DOMAIN}
+Environment=MAILU_DIR=${MAILU_DIR}
+ExecStart=/usr/local/bin/agentbbs-mailu-certs
+UNIT
+  cat > /etc/systemd/system/agentbbs-mailu-certs.timer <<UNIT
+[Unit]
+Description=Periodic Mailu TLS cert refresh from Caddy
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now agentbbs-mailu-certs.timer >/dev/null 2>&1 || true
+
+  # Open the mail ports; bring Mailu up only once the operator has created
+  # mailu.env (it carries SECRET_KEY + admin password — never auto-generated).
+  for p in 25 465 587 993 995; do ufw allow "${p}/tcp" >/dev/null; done
+  if command -v docker >/dev/null && [ -f "${MAILU_DIR}/mailu.env" ]; then
+    ( cd "$MAILU_DIR" && docker compose up -d ) || warn "mailu: docker compose up failed — check ${MAILU_DIR}"
+  else
+    warn "Mailu not started yet: create ${MAILU_DIR}/mailu.env (cp mailu.env.example) and run 'docker compose up -d' — see docs/mail.md"
+  fi
+else
+  upsert_env AGENTBBS_MAIL_DOMAIN ""
+  systemctl disable --now agentbbs-mailu-certs.timer >/dev/null 2>&1 || true
 fi
 
 # ---- 10. firewall + start agentbbs on :22 ----------------------------------

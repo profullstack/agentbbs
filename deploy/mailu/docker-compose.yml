@@ -1,0 +1,83 @@
+# Mailu stack for mail.profullstack.com — self-hosted Postfix + Dovecot +
+# Roundcube + rspamd. Coexists with the host Caddy: Mailu owns the mail ports
+# (25/465/587/993/995) and serves HTTP on loopback only; Caddy fronts the
+# webmail at https://mail.profullstack.com and supplies the TLS cert
+# (TLS_FLAVOR=mail, certs copied by refresh-certs.sh).
+#
+# Pinned to a Mailu release; bump deliberately. See docs/mail.md.
+x-environment: &default-environment
+  env_file: mailu.env
+
+services:
+  redis:
+    image: redis:alpine
+    restart: always
+    volumes:
+      - "./data/redis:/data"
+
+  front:
+    image: ghcr.io/mailu/nginx:2024.06
+    restart: always
+    env_file: mailu.env
+    ports:
+      # Mail ports bound on the host; HTTP only on loopback for Caddy.
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "995:995"
+      - "127.0.0.1:8080:80"
+    volumes:
+      - "./certs:/certs"
+      - "./data/overrides/nginx:/overrides:ro"
+    depends_on:
+      - redis
+
+  admin:
+    image: ghcr.io/mailu/admin:2024.06
+    restart: always
+    env_file: mailu.env
+    volumes:
+      - "./data/data:/data"
+      - "./data/dkim:/dkim"
+    depends_on:
+      - redis
+
+  imap:
+    image: ghcr.io/mailu/dovecot:2024.06
+    restart: always
+    env_file: mailu.env
+    volumes:
+      - "./data/mail:/mail"
+      - "./data/overrides/dovecot:/overrides:ro"
+    depends_on:
+      - front
+
+  smtp:
+    image: ghcr.io/mailu/postfix:2024.06
+    restart: always
+    env_file: mailu.env
+    volumes:
+      - "./data/mailqueue:/queue"
+      - "./data/overrides/postfix:/overrides:ro"
+    depends_on:
+      - front
+
+  antispam:
+    image: ghcr.io/mailu/rspamd:2024.06
+    restart: always
+    env_file: mailu.env
+    volumes:
+      - "./data/filter:/var/lib/rspamd"
+      - "./data/overrides/rspamd:/overrides:ro"
+    depends_on:
+      - front
+
+  webmail:
+    image: ghcr.io/mailu/roundcube:2024.06
+    restart: always
+    env_file: mailu.env
+    volumes:
+      - "./data/webmail:/data"
+    depends_on:
+      - front
