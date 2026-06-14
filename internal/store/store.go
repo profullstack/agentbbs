@@ -20,23 +20,25 @@ type User struct {
 	EmailVerified bool
 	Premium       bool   // paid the one-time lifetime membership
 	PremiumPayID  string // CoinPay payment id of the pending/settled premium charge
+	Banned        bool   // suspended by an admin (blocked at login)
 	CreatedAt     time.Time
 }
 
 // userCols is the column list (in struct order) for every user SELECT, kept in
 // sync with scanUser.
-const userCols = `id, name, kind, pubkey_fp, email, email_verified, premium, premium_pay_id, created_at`
+const userCols = `id, name, kind, pubkey_fp, email, email_verified, premium, premium_pay_id, banned, created_at`
 
 // scanUser reads one user row selected with userCols.
 func scanUser(sc interface{ Scan(...any) error }) (User, error) {
 	var u User
-	var verified, premium int
+	var verified, premium, banned int
 	var created string
-	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &premium, &u.PremiumPayID, &created); err != nil {
+	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &premium, &u.PremiumPayID, &banned, &created); err != nil {
 		return User{}, err
 	}
 	u.EmailVerified = verified != 0
 	u.Premium = premium != 0
+	u.Banned = banned != 0
 	u.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return u, nil
 }
@@ -105,7 +107,56 @@ type Store interface {
 	DomainsForUser(username string) ([]string, error)
 	AllDomains() ([]DomainMap, error)
 
+	// Admin console (PRD §6). All read-only listings are newest-first.
+
+	// ListUsers returns up to limit accounts, most recently created first.
+	ListUsers(limit int) ([]User, error)
+	// SetBanned suspends (or restores) an account; banned accounts are blocked
+	// at login by the SSH routes.
+	SetBanned(userID int64, banned bool) error
+	// RecentSessions returns the last n session rows (the audit trail).
+	RecentSessions(n int) ([]SessionRow, error)
+	// LogAdminAction records one privileged action for the audit log.
+	LogAdminAction(admin, action, target, detail string) error
+	// RecentAdminActions returns the last n logged admin actions.
+	RecentAdminActions(n int) ([]AdminAction, error)
+	// RecentChatsAll returns the last n agent@ messages across all users, for
+	// moderation review.
+	RecentChatsAll(n int) ([]ChatRow, error)
+	// DisabledPlugins reports the set of plugin IDs currently switched off.
+	DisabledPlugins() (map[string]bool, error)
+	// SetPluginDisabled enables or disables a plugin by ID. Idempotent.
+	SetPluginDisabled(id string, disabled bool) error
+
 	Close() error
+}
+
+// SessionRow is one connection record from the audit trail.
+type SessionRow struct {
+	ID         int64
+	Username   string
+	Remote     string
+	Route      string
+	Started    time.Time
+	Ended      time.Time
+	EndedValid bool // false while the session is still open
+}
+
+// AdminAction is one entry in the admin audit log.
+type AdminAction struct {
+	Admin  string
+	Action string
+	Target string
+	Detail string
+	At     time.Time
+}
+
+// ChatRow is one agent@ message with its author, for moderation review.
+type ChatRow struct {
+	Username string
+	Role     string
+	Text     string
+	At       time.Time
 }
 
 // ChatMessage is one line of an agent@ conversation.
@@ -159,6 +210,7 @@ func migrate(db *sql.DB) error {
 		{"premium", "premium INTEGER NOT NULL DEFAULT 0"},
 		{"premium_ref", "premium_ref TEXT NOT NULL DEFAULT ''"},
 		{"premium_pay_id", "premium_pay_id TEXT NOT NULL DEFAULT ''"},
+		{"banned", "banned INTEGER NOT NULL DEFAULT 0"},
 	})
 }
 
@@ -239,6 +291,20 @@ CREATE TABLE IF NOT EXISTS domains (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_domains_user ON domains(username);
+CREATE TABLE IF NOT EXISTS admin_actions (
+  id INTEGER PRIMARY KEY,
+  admin TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_admin_actions_id ON admin_actions(id DESC);
+CREATE TABLE IF NOT EXISTS plugin_state (
+  id TEXT PRIMARY KEY,
+  disabled INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
@@ -521,6 +587,148 @@ func (s *sqliteStore) AllDomains() ([]DomainMap, error) {
 		out = append(out, dm)
 	}
 	return out, rows.Err()
+}
+
+func (s *sqliteStore) ListUsers(limit int) ([]User, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT `+userCols+` FROM users ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) SetBanned(userID int64, banned bool) error {
+	b := 0
+	if banned {
+		b = 1
+	}
+	_, err := s.db.Exec(`UPDATE users SET banned = ? WHERE id = ?`, b, userID)
+	return err
+}
+
+func (s *sqliteStore) RecentSessions(n int) ([]SessionRow, error) {
+	if n <= 0 {
+		n = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, username, remote_addr, route, started_at, ended_at
+		FROM sessions ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRow
+	for rows.Next() {
+		var r SessionRow
+		var started string
+		var ended sql.NullString
+		if err := rows.Scan(&r.ID, &r.Username, &r.Remote, &r.Route, &started, &ended); err != nil {
+			return nil, err
+		}
+		r.Started, _ = time.Parse(time.RFC3339, started)
+		if ended.Valid && ended.String != "" {
+			r.Ended, _ = time.Parse(time.RFC3339, ended.String)
+			r.EndedValid = true
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) LogAdminAction(admin, action, target, detail string) error {
+	_, err := s.db.Exec(`INSERT INTO admin_actions (admin, action, target, detail) VALUES (?,?,?,?)`,
+		admin, action, target, detail)
+	return err
+}
+
+func (s *sqliteStore) RecentAdminActions(n int) ([]AdminAction, error) {
+	if n <= 0 {
+		n = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT admin, action, target, detail, created_at
+		FROM admin_actions ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AdminAction
+	for rows.Next() {
+		var a AdminAction
+		var at string
+		if err := rows.Scan(&a.Admin, &a.Action, &a.Target, &a.Detail, &at); err != nil {
+			return nil, err
+		}
+		a.At, _ = time.Parse(time.RFC3339, at)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) RecentChatsAll(n int) ([]ChatRow, error) {
+	if n <= 0 {
+		n = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT username, role, text, created_at
+		FROM chat_messages ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatRow
+	for rows.Next() {
+		var c ChatRow
+		var at string
+		if err := rows.Scan(&c.Username, &c.Role, &c.Text, &at); err != nil {
+			return nil, err
+		}
+		c.At, _ = time.Parse(time.RFC3339, at)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) DisabledPlugins() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT id FROM plugin_state WHERE disabled = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) SetPluginDisabled(id string, disabled bool) error {
+	d := 0
+	if disabled {
+		d = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO plugin_state (id, disabled) VALUES (?,?)
+		ON CONFLICT(id) DO UPDATE SET
+		  disabled = excluded.disabled,
+		  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`, id, d)
+	return err
 }
 
 func (s *sqliteStore) Close() error { return s.db.Close() }

@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/ssh"
@@ -40,6 +41,11 @@ var JoinNames = map[string]bool{"join": true, "signup": true, "register": true}
 // list/add/remove the domains pointed at a member's homepage.
 var DomainNames = map[string]bool{"domain": true, "domains": true}
 
+// AdminNames are usernames that route to the privileged admin console (PRD §6).
+// The route only opens for accounts whose name is in the operator allowlist
+// (see IsAdmin); the name itself confers nothing.
+var AdminNames = map[string]bool{"admin": true, "sysop": true}
+
 // IsGuestName reports whether the SSH username requests anonymous hub access.
 func IsGuestName(u string) bool { return GuestNames[strings.ToLower(u)] }
 
@@ -51,6 +57,25 @@ func IsJoinName(u string) bool { return JoinNames[strings.ToLower(u)] }
 
 // IsDomainName reports whether the SSH username requests the custom-domain flow.
 func IsDomainName(u string) bool { return DomainNames[strings.ToLower(u)] }
+
+// IsAdminName reports whether the SSH username requests the admin console.
+func IsAdminName(u string) bool { return AdminNames[strings.ToLower(u)] }
+
+// Admins returns the operator-configured admin allowlist: the lowercased,
+// comma/space-separated account names in $AGENTBBS_ADMINS. Admin status can
+// only be granted by the operator (via env), never self-assigned in-band.
+func Admins() map[string]bool {
+	out := map[string]bool{}
+	for _, f := range strings.FieldsFunc(os.Getenv("AGENTBBS_ADMINS"), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		out[strings.ToLower(f)] = true
+	}
+	return out
+}
+
+// IsAdmin reports whether the account name is in the operator allowlist.
+func IsAdmin(name string) bool { return Admins()[strings.ToLower(name)] }
 
 // KindFor infers the identity kind from a (non-guest) username.
 // Usernames prefixed "agent-" are automated clients (PRD §3).

@@ -31,7 +31,7 @@ plugins around one shared account system; the full product plan is in
 | Pods (rootless containers, free for verified members) | ✅ |
 | Video (`video-<code>@`, PairUX/LiveKit → ASCII streaming) | ✅ |
 | `agent@` chat (configurable agent backend) + finger | ✅ |
-| M2 — admin console | ⬜ |
+| M2 — admin console (`admin@`: users, sessions, moderation, plugins) | ✅ |
 | M3 — AgentGames (agent-vs-agent ladder; spec on logicsrc.com) | ⬜ |
 | M4 — Files (cl1.tech SFTP workspaces) | ⬜ |
 | M5 — AgentAd marketplace (built on the AgentAd standard in logicsrc) | ⬜ |
@@ -53,6 +53,7 @@ Configuration (env):
 | `AGENTBBS_DATA` | `./data` | SQLite db, host key, per-user dirs |
 | `AGENTBBS_ASSETS` | `./assets` | doom binary + wads |
 | `AGENTBBS_HOST` | `bbs.profullstack.com` | hostname shown in messages |
+| `AGENTBBS_ADMINS` | unset | operator account names for `admin@` (comma/space-separated) — see [docs/admin.md](docs/admin.md) |
 | `AGENTBBS_SANDBOX` | `auto` | `bwrap` / `prlimit` / `none` |
 | `AGENTBBS_POD_IMAGE` | `debian:stable-slim` | pod base image |
 | `AGENTBBS_POD_MEM` / `AGENTBBS_POD_CPUS` | `512m` / `1` | pod caps |
