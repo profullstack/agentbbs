@@ -8,6 +8,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/profullstack/agentbbs/internal/games"
 )
 
 // User is a persisted account (member or agent; guests are never stored).
@@ -128,7 +130,50 @@ type Store interface {
 	// SetPluginDisabled enables or disables a plugin by ID. Idempotent.
 	SetPluginDisabled(id string, disabled bool) error
 
+	// AgentGames (PRD §5.2): per-game ELO ladder + replayable match log.
+
+	// Rating returns a player's current rating for a game, or
+	// games.DefaultRating if they have no rated history there. It satisfies
+	// games.Store so the matchmaker can read ratings.
+	Rating(user, game string) (float64, error)
+	// SaveMatch records a finished match and upserts both players' ratings.
+	// It satisfies games.Store.
+	SaveMatch(games.FinishedMatch) error
+	// TopRatings returns the n highest-rated players for a game.
+	TopRatings(game string, n int) ([]RatingRow, error)
+	// RecentMatches returns the last n matches for a game, newest first.
+	RecentMatches(game string, n int) ([]MatchRow, error)
+	// MatchByID returns one match (with its moves, for replay).
+	MatchByID(id int64) (MatchRow, bool, error)
+
+	// MintAPIToken creates and stores a fresh bearer token for the WebSocket
+	// game endpoint, bound to username. Returns the token.
+	MintAPIToken(username string) (string, error)
+	// UserByToken resolves an API token to its account name.
+	UserByToken(token string) (string, bool, error)
+
 	Close() error
+}
+
+// RatingRow is one ladder entry.
+type RatingRow struct {
+	User   string
+	Rating float64
+	Played int
+}
+
+// MatchRow is a recorded match, including its moves for replay.
+type MatchRow struct {
+	ID          int64
+	Game        string
+	P0          string
+	P1          string
+	Winner      int
+	Reason      string
+	Moves       []games.Move
+	RatingAfter [2]float64
+	StartedAt   time.Time
+	EndedAt     time.Time
 }
 
 // SessionRow is one connection record from the audit trail.
@@ -305,6 +350,37 @@ CREATE TABLE IF NOT EXISTS plugin_state (
   disabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE TABLE IF NOT EXISTS game_ratings (
+  username TEXT NOT NULL,
+  game TEXT NOT NULL,
+  rating REAL NOT NULL,
+  played INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (username, game)
+);
+CREATE INDEX IF NOT EXISTS idx_game_ratings_board ON game_ratings(game, rating DESC);
+CREATE TABLE IF NOT EXISTS game_matches (
+  id INTEGER PRIMARY KEY,
+  game TEXT NOT NULL,
+  p0 TEXT NOT NULL,
+  p1 TEXT NOT NULL,
+  winner INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  moves TEXT NOT NULL DEFAULT '[]',
+  r0_before REAL NOT NULL DEFAULT 0,
+  r1_before REAL NOT NULL DEFAULT 0,
+  r0_after REAL NOT NULL DEFAULT 0,
+  r1_after REAL NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ended_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_game_matches_game ON game_matches(game, id DESC);
+CREATE TABLE IF NOT EXISTS api_tokens (
+  token TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(username);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {

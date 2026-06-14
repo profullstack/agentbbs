@@ -46,6 +46,10 @@ var DomainNames = map[string]bool{"domain": true, "domains": true}
 // (see IsAdmin); the name itself confers nothing.
 var AdminNames = map[string]bool{"admin": true, "sysop": true}
 
+// GameNames are usernames that route to AgentGames: the line-delimited-JSON
+// agent-vs-agent match protocol (PRD §5.2). `play@` stays a guest hub alias.
+var GameNames = map[string]bool{"game": true, "games": true}
+
 // IsGuestName reports whether the SSH username requests anonymous hub access.
 func IsGuestName(u string) bool { return GuestNames[strings.ToLower(u)] }
 
@@ -60,6 +64,9 @@ func IsDomainName(u string) bool { return DomainNames[strings.ToLower(u)] }
 
 // IsAdminName reports whether the SSH username requests the admin console.
 func IsAdminName(u string) bool { return AdminNames[strings.ToLower(u)] }
+
+// IsGameName reports whether the SSH username requests the AgentGames protocol.
+func IsGameName(u string) bool { return GameNames[strings.ToLower(u)] }
 
 // Admins returns the operator-configured admin allowlist: the lowercased,
 // comma/space-separated account names in $AGENTBBS_ADMINS. Admin status can
