@@ -152,6 +152,15 @@ type Store interface {
 	// UserByToken resolves an API token to its account name.
 	UserByToken(token string) (string, bool, error)
 
+	// qrypt.chat anonymous-invite issuance (docs/qrypt-invites.md).
+
+	// QryptInviteCount reports how many qrypt.chat invites username has issued.
+	QryptInviteCount(username string) (int, error)
+	// RecordQryptInvite records one issued invite (its jti, for audit and as
+	// the per-member quota counter) against username. It returns
+	// ErrQuotaExceeded if the member is already at or above quota.
+	RecordQryptInvite(username, jti string, quota int) error
+
 	Close() error
 }
 
@@ -225,6 +234,9 @@ var ErrKeyMismatch = errors.New("username registered with a different key")
 
 // ErrDomainTaken means a domain is already mapped to a different member.
 var ErrDomainTaken = errors.New("domain already mapped to another account")
+
+// ErrQuotaExceeded means a member has hit their qrypt.chat invite quota.
+var ErrQuotaExceeded = errors.New("qrypt invite quota exceeded")
 
 type sqliteStore struct{ db *sql.DB }
 
@@ -381,6 +393,12 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(username);
+CREATE TABLE IF NOT EXISTS qrypt_invites (
+  jti TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_qrypt_invites_user ON qrypt_invites(username);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
@@ -805,6 +823,38 @@ func (s *sqliteStore) SetPluginDisabled(id string, disabled bool) error {
 		  disabled = excluded.disabled,
 		  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`, id, d)
 	return err
+}
+
+func (s *sqliteStore) QryptInviteCount(username string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM qrypt_invites WHERE username = ?`, username).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// RecordQryptInvite atomically enforces the per-member quota and records the
+// invite's jti. The count check and the insert run in one transaction so two
+// concurrent issuances can't both slip past the cap.
+func (s *sqliteStore) RecordQryptInvite(username, jti string, quota int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM qrypt_invites WHERE username = ?`, username).Scan(&n); err != nil {
+		return err
+	}
+	if quota > 0 && n >= quota {
+		return ErrQuotaExceeded
+	}
+	if _, err := tx.Exec(`INSERT INTO qrypt_invites (jti, username) VALUES (?,?)`, jti, username); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *sqliteStore) Close() error { return s.db.Close() }

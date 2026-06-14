@@ -144,6 +144,47 @@ func (m *Manager) Attach(s ssh.Session, user string) error {
 	return nil
 }
 
+// Exec provisions the user's pod and runs argv inside it wired to the SSH
+// session (PTY required). Used for tor@/tor-irc@ so arbitrary or interactive
+// commands run sandboxed in the member's container, never on the host. Blocks
+// until the command exits or the session closes.
+func (m *Manager) Exec(s ssh.Session, user string, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("pods: no command given")
+	}
+	ptyReq, winCh, hasPty := s.Pty()
+	if !hasPty {
+		return fmt.Errorf("pods: a PTY is required (ssh -t)")
+	}
+	name, err := m.ensure(user)
+	if err != nil {
+		return err
+	}
+
+	args := append([]string{"exec", "-it", "-e", "TERM=" + ptyReq.Term, name}, argv...)
+	cmd := exec.Command(m.engine, args...)
+	f, err := pty.Start(cmd)
+	if err != nil {
+		return fmt.Errorf("pods: exec failed: %w", err)
+	}
+	defer f.Close()
+
+	m.ref(name, +1)
+	defer m.deref(name)
+
+	_ = pty.Setsize(f, &pty.Winsize{Rows: uint16(ptyReq.Window.Height), Cols: uint16(ptyReq.Window.Width)})
+	go func() {
+		for w := range winCh {
+			_ = pty.Setsize(f, &pty.Winsize{Rows: uint16(w.Height), Cols: uint16(w.Width)})
+		}
+	}()
+
+	go func() { _, _ = io.Copy(f, s) }() // ssh -> pod
+	_, _ = io.Copy(s, f)                 // pod -> ssh
+	_ = cmd.Wait()
+	return nil
+}
+
 func (m *Manager) ref(name string, d int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -19,6 +19,8 @@
 //	agentbbs map-domain DOMAIN NAME       map a custom domain to a homepage
 //	agentbbs unmap-domain DOMAIN NAME     remove a custom-domain mapping
 //	agentbbs mint-token NAME             issue a WebSocket API token for NAME
+//	agentbbs qrypt-invite NAME           mint a qrypt.chat anonymous invite for NAME
+//	agentbbs qrypt-issuer-keygen         print a fresh qrypt issuer seed + public key
 package main
 
 import (
@@ -61,9 +63,11 @@ import (
 	"github.com/profullstack/agentbbs/internal/sandbox"
 	"github.com/profullstack/agentbbs/internal/sites"
 	"github.com/profullstack/agentbbs/internal/store"
+	"github.com/profullstack/agentbbs/internal/tor"
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
 
 func env(k, def string) string {
@@ -121,6 +125,14 @@ func main() {
 		mintToken(st, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "qrypt-invite" {
+		qryptInviteCmd(st, os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
+		qryptIssuerKeygen()
+		return
+	}
 
 	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
@@ -141,7 +153,7 @@ func main() {
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
@@ -247,6 +259,12 @@ func (a *app) router() wish.Middleware {
 				a.handleGame(s)
 			case auth.IsPodName(user):
 				a.handlePod(s)
+			case auth.IsTorURLName(user):
+				a.handleTorURL(s)
+			case auth.IsTorIRCName(user):
+				a.handleTorIRC(s)
+			case auth.IsTorName(user):
+				a.handleTorCmd(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -839,6 +857,136 @@ func (a *app) handlePod(s ssh.Session) {
 		wish.Println(s, "pod error: "+err.Error())
 		_ = s.Exit(1)
 	}
+}
+
+// torMember resolves the caller's key to a premium member for the tor routes,
+// printing a reason and returning ok=false otherwise. It records the session.
+func (a *app) torMember(s ssh.Session, route string) (store.User, bool) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, route+"@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return store.User{}, false
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return store.User{}, false
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return store.User{}, false
+	}
+	if !a.ensurePremium(&u) {
+		wish.Println(s, "  "+route+" is a Premium feature ($10 lifetime). Upgrade: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return store.User{}, false
+	}
+	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), route)
+	return u, true
+}
+
+// handleTorURL fetches a single URL over Tor and writes the body back. One-shot,
+// host-side, and constrained (timeout + size cap, http/https only). Premium.
+func (a *app) handleTorURL(s ssh.Session) {
+	u, ok := a.torMember(s, "tor-url")
+	if !ok {
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 {
+		wish.Println(s, "usage: ssh tor-url@"+a.host+" <http(s)-url>   (e.g. an .onion address)")
+		_ = s.Exit(1)
+		return
+	}
+	url := args[0]
+	log.Info("tor-url fetch", "user", u.Name, "url", url)
+	body, err := tor.FetchURL(s.Context(), url)
+	if err != nil {
+		wish.Println(s, "  "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_, _ = s.Write(body)
+	_ = s.Exit(0)
+}
+
+// handleTorIRC opens an interactive IRC-over-Tor session inside the member's
+// pod (sandboxed). Premium; requires a PTY.
+func (a *app) handleTorIRC(s ssh.Session) {
+	u, ok := a.torMember(s, "tor-irc")
+	if !ok {
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 || !validIRCServer(args[0]) {
+		wish.Println(s, "usage: ssh -t tor-irc@"+a.host+" <server[:port]>   (e.g. an .onion IRC server)")
+		_ = s.Exit(1)
+		return
+	}
+	if a.pods == nil {
+		wish.Println(s, "pods are temporarily unavailable on this host.")
+		_ = s.Exit(1)
+		return
+	}
+	log.Info("tor-irc connect", "user", u.Name, "server", args[0])
+	if err := a.pods.Exec(s, u.Name, tor.IRCArgv(args[0])); err != nil {
+		wish.Println(s, "tor-irc error: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
+// handleTorCmd runs an arbitrary command through Tor (torsocks) inside the
+// member's pod, never on the host. Premium; requires a PTY.
+func (a *app) handleTorCmd(s ssh.Session) {
+	u, ok := a.torMember(s, "tor")
+	if !ok {
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 {
+		wish.Println(s, "usage: ssh -t tor@"+a.host+" <command...>   (runs in your pod, over Tor)")
+		_ = s.Exit(1)
+		return
+	}
+	if a.pods == nil {
+		wish.Println(s, "pods are temporarily unavailable on this host.")
+		_ = s.Exit(1)
+		return
+	}
+	log.Info("tor cmd", "user", u.Name, "argv", strings.Join(args, " "))
+	if err := a.pods.Exec(s, u.Name, tor.Torsocks(args)); err != nil {
+		wish.Println(s, "tor error: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
+// validIRCServer accepts host or host:port with a sane charset (no shell/space).
+func validIRCServer(s string) bool {
+	host := s
+	if i := strings.LastIndex(s, ":"); i > 0 {
+		port := s[i+1:]
+		host = s[:i]
+		if port == "" || len(port) > 5 {
+			return false
+		}
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	if host == "" || len(host) > 255 {
+		return false
+	}
+	for _, r := range host {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // handleVideo joins a PairUX call rendered as ASCII (docs/video.md).

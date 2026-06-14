@@ -46,6 +46,16 @@ var DomainNames = map[string]bool{"domain": true, "domains": true}
 // (see IsAdmin); the name itself confers nothing.
 var AdminNames = map[string]bool{"admin": true, "sysop": true}
 
+// TorURLNames route to the one-shot "fetch a URL over Tor" command (premium).
+var TorURLNames = map[string]bool{"tor-url": true}
+
+// TorIRCNames route to an interactive IRC-over-Tor client in the member's pod.
+var TorIRCNames = map[string]bool{"tor-irc": true}
+
+// TorNames route to the generic "run a command over Tor" passthrough in the
+// member's pod (premium). Checked after the more specific tor-* routes.
+var TorNames = map[string]bool{"tor": true}
+
 // GameNames are usernames that route to AgentGames: the line-delimited-JSON
 // agent-vs-agent match protocol (PRD §5.2). `play@` stays a guest hub alias.
 var GameNames = map[string]bool{"game": true, "games": true}
@@ -65,6 +75,15 @@ func IsDomainName(u string) bool { return DomainNames[strings.ToLower(u)] }
 // IsAdminName reports whether the SSH username requests the admin console.
 func IsAdminName(u string) bool { return AdminNames[strings.ToLower(u)] }
 
+// IsTorURLName reports whether the SSH username requests the tor-url fetch.
+func IsTorURLName(u string) bool { return TorURLNames[strings.ToLower(u)] }
+
+// IsTorIRCName reports whether the SSH username requests the tor-irc client.
+func IsTorIRCName(u string) bool { return TorIRCNames[strings.ToLower(u)] }
+
+// IsTorName reports whether the SSH username requests the generic tor passthrough.
+func IsTorName(u string) bool { return TorNames[strings.ToLower(u)] }
+
 // systemReserved are names that don't drive an SSH route but would still
 // collide with a per-user subdomain (<name>.<host>), the agent route, or common
 // infra hostnames — so members may not claim them as account names.
@@ -80,7 +99,8 @@ var systemReserved = map[string]bool{
 // therefore cannot be used as a member's account name.
 func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
-	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] || systemReserved[n] {
+	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
+		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes
