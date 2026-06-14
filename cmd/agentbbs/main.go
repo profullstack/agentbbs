@@ -61,6 +61,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
+	"github.com/profullstack/agentbbs/internal/mailbox"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -317,6 +318,8 @@ func (a *app) router() wish.Middleware {
 				a.handleIRC(s)
 			case auth.IsNewsName(user):
 				a.handleNews(s)
+			case auth.IsMailName(user):
+				a.handleMail(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -470,6 +473,28 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 		Description: "members-only Usenet/NNTP discussion",
 		Locked:      newsLock,
 		Cmd:         sessionExec{run: func() error { return a.runNews(s, su.Name) }},
+	})
+
+	// Mail — a Founding Lifetime Member perk: the AgentMail TUI.
+	mailLock := ""
+	switch {
+	case guest:
+		mailLock = membersOnly
+	case !su.Premium:
+		mailLock = "Founding Lifetime Member feature ($99 one-time) — upgrade: ssh join@" + a.host
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "Mail",
+		Description: "your " + a.fe.Domain + " mailbox",
+		Locked:      mailLock,
+		Cmd: sessionExec{run: func() error {
+			c, err := a.mailClientFor(su)
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			return mailbox.RunReader(s, c)
+		}},
 	})
 
 	// Tor — a Founding Lifetime Member perk: a torsocks shell in the pod.
@@ -1271,6 +1296,83 @@ func (a *app) runNews(s ssh.Session, name string) error {
 	}
 	log.Info("news connect", "user", name, "addr", addr)
 	return news.RunReader(s, addr, name)
+}
+
+// mailClientFor builds a paid-gated AgentMail client for a member, connecting to
+// the self-hosted Mailu backend. IMAP uses Dovecot master-user auth (login
+// "<name>*<master>") so the BBS gateway can open any member's mailbox with one
+// secret; SMTP defaults to the co-located relay (no auth). Returns an error if
+// the IMAP connection/login fails.
+func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
+	domain := env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
+	login := su.Name
+	if master := os.Getenv("AGENTBBS_MAIL_MASTER_USER"); master != "" {
+		login = su.Name + "*" + master
+	}
+	cfg := mailbox.IMAPConfig{
+		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", domain+":993"),
+		SMTPAddr: env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"),
+		Username: login,
+		Password: os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+		// SMTPUser/SMTPPass left empty: submit via the trusted local relay.
+	}
+	tr, err := mailbox.NewIMAPTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return mailbox.NewClient(tr, mailbox.Identity{Name: su.Name, Paid: su.Premium}, domain, 50), nil
+}
+
+// handleMail routes a Founding Lifetime member into AgentMail: an interactive
+// TUI when a PTY is present and no command is given, or the JSON bot mode
+// (ssh mail@host <cmd>, or no PTY) for agents.
+func (a *app) handleMail(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "mail@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	if !a.ensurePremium(&u) {
+		wish.Println(s, "  mail is a Founding Lifetime Member feature ($99 one-time). Upgrade: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "mail")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	c, err := a.mailClientFor(u)
+	if err != nil {
+		wish.Println(s, "mail: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	defer c.Close()
+
+	args := s.Command()
+	_, _, hasPty := s.Pty()
+	if len(args) > 0 || !hasPty {
+		// Agent/bot mode: JSON in, JSON out.
+		if err := mailbox.RunBot(s.Context(), c, args, s, s); err != nil {
+			_ = s.Exit(1)
+		}
+		return
+	}
+	if err := mailbox.RunReader(s, c); err != nil {
+		wish.Println(s, "mail: "+err.Error())
+		_ = s.Exit(1)
+	}
 }
 
 // handleTorCmd runs an arbitrary command through Tor (torsocks) inside the
