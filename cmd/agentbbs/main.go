@@ -150,7 +150,9 @@ func main() {
 	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
 	if fe.Domain == "" {
-		fe.Domain = host // personal addresses live on the BBS host by default
+		// Member mailboxes live on a dedicated mail subdomain (mail.profullstack.com),
+		// not the BBS host and not the apex (which is reserved for corporate mail).
+		fe.Domain = env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
 	}
 	a := &app{
 		st:      st,
@@ -332,7 +334,9 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	username := strings.ToLower(s.User())
 
 	var u auth.User
-	if auth.IsGuestName(username) || fp == "" {
+	var su store.User
+	guest := auth.IsGuestName(username) || fp == ""
+	if guest {
 		// Keyless or explicitly anonymous → guest. Named accounts require a key.
 		if !auth.IsGuestName(username) {
 			wish.Println(s, "note: member access requires an SSH key; joining as guest.")
@@ -341,7 +345,9 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	} else {
 		// A key maps to exactly one account: if this key is already
 		// registered, that identity wins regardless of the username typed.
-		su, found, err := a.st.UserByFingerprint(fp)
+		var found bool
+		var err error
+		su, found, err = a.st.UserByFingerprint(fp)
 		if err == nil && !found {
 			su, err = a.st.EnsureUser(username, string(auth.KindFor(username)), fp)
 		}
@@ -377,7 +383,88 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		// URL works the moment a member first signs in.
 		seedHomepage(filepath.Join(ctx.DataDir, "public_html"), u.Name, a.host)
 	}
-	return hub.New(u, ctx, a.enabledPlugins()), []tea.ProgramOption{tea.WithAltScreen()}
+	return hub.New(u, ctx, a.enabledPlugins(), a.sessionApps(s, su, guest)), []tea.ProgramOption{tea.WithAltScreen()}
+}
+
+// sessionExec adapts a func to tea.ExecCommand so the hub can run a
+// terminal-takeover feature (pod shell, IRC, news, mail, Tor) via tea.Exec and
+// return to the menu afterwards. The feature reads and writes the ssh.Session
+// directly, so the stream hooks are no-ops.
+type sessionExec struct{ run func() error }
+
+func (e sessionExec) Run() error          { return e.run() }
+func (e sessionExec) SetStdin(io.Reader)  {}
+func (e sessionExec) SetStdout(io.Writer) {}
+func (e sessionExec) SetStderr(io.Writer) {}
+
+// sessionApps builds the hub's terminal-takeover entries (pod, IRC, news, Tor)
+// so a member reaches everything from one `ssh <name>@host` login instead of
+// separate `ssh pod@`/`irc@`/`news@`/`tor@` connections (which still work as
+// aliases, mainly for bots). Each entry is gated by membership/verification/plan
+// and shown locked with a reason when unavailable.
+func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.SessionApp {
+	membersOnly := "members only — register first: ssh join@" + a.host
+	apps := make([]hub.SessionApp, 0, 4)
+
+	// Pod — free for verified members.
+	podLock := ""
+	switch {
+	case guest:
+		podLock = membersOnly
+	case env("AGENTBBS_REQUIRE_VERIFIED_EMAIL", "1") != "0" && !su.EmailVerified:
+		podLock = "confirm your email first — re-run: ssh join@" + a.host
+	case a.pods == nil:
+		podLock = "pods are temporarily unavailable on this host"
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "Pod",
+		Description: "your own Linux pod — a full shell",
+		Locked:      podLock,
+		Cmd:         sessionExec{run: func() error { return a.pods.Attach(s, su.Name) }},
+	})
+
+	// IRC — free for any registered member.
+	ircLock := ""
+	if guest {
+		ircLock = membersOnly
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "IRC",
+		Description: "members-only chat network (humans + agents)",
+		Locked:      ircLock,
+		Cmd:         sessionExec{run: func() error { return a.runIRC(s, su.Name, su.Premium) }},
+	})
+
+	// News — free for any registered member.
+	newsLock := ""
+	if guest {
+		newsLock = membersOnly
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "News",
+		Description: "members-only Usenet/NNTP discussion",
+		Locked:      newsLock,
+		Cmd:         sessionExec{run: func() error { return a.runNews(s, su.Name) }},
+	})
+
+	// Tor — a Founding Lifetime Member perk: a torsocks shell in the pod.
+	torLock := ""
+	switch {
+	case guest:
+		torLock = membersOnly
+	case !su.Premium:
+		torLock = "Founding Lifetime Member feature ($99 one-time) — upgrade: ssh join@" + a.host
+	case a.pods == nil:
+		torLock = "pods are temporarily unavailable on this host"
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "Tor shell",
+		Description: "a torsocks shell in your pod (everything over Tor)",
+		Locked:      torLock,
+		Cmd:         sessionExec{run: func() error { return a.pods.Exec(s, su.Name, tor.Torsocks([]string{"bash", "-l"})) }},
+	})
+
+	return apps
 }
 
 // readLine reads one line of interactive input from an SSH session that is
@@ -464,7 +551,7 @@ func (a *app) handleJoin(s ssh.Session) {
 	}, "\n"))
 
 	// 1) email -> emailed code -> enter code. A verified account is a free
-	// member: it gets a Docker pod (ssh pod@) and a /~name homepage.
+	// member: it gets a Docker pod, IRC/news, and a /~name homepage, all from the hub.
 	if !u.EmailVerified {
 		if !a.verifyEmailInteractive(s, in, &u) {
 			_ = s.Exit(1)
@@ -477,10 +564,15 @@ func (a *app) handleJoin(s ssh.Session) {
 	seedHomepage(filepath.Join(a.dataDir, "users", u.Name, "public_html"), u.Name, a.host)
 
 	wish.Println(s, "\n"+strings.Join([]string{
-		"  You're in — free membership includes:",
-		"    pod       ssh pod@" + a.host + "        your own Linux pod",
-		"    hub       ssh " + u.Name + "@" + a.host,
-		"    homepage  https://" + a.host + "/~" + u.Name,
+		"  You're in. One login gets you everything — no other servers to ssh into:",
+		"",
+		"    ssh " + u.Name + "@" + a.host,
+		"",
+		"  Inside, free membership includes:",
+		"    • your own Linux pod (a full shell)",
+		"    • IRC chat + Usenet/news (members-only)",
+		"    • the arcade & games",
+		"    • your homepage   https://" + a.host + "/~" + u.Name,
 	}, "\n"))
 
 	// 2) Founding Lifetime ($99 one-time): personal @host email + custom domains.
@@ -515,14 +607,35 @@ func (a *app) acceptTerms(s ssh.Session, in *bufio.Reader) bool {
 	}
 }
 
+// fpToken derives up to n lowercase alphanumeric characters from an SSH key
+// fingerprint, for use in a default username/home-dir. The raw base64
+// fingerprint can contain '+' and '/', which are unsafe as a filesystem token,
+// so we keep only [a-z0-9].
+func fpToken(fp string, n int) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		default:
+			return -1
+		}
+	}, strings.ToLower(strings.TrimPrefix(fp, "SHA256:")))
+	if len(cleaned) > n {
+		cleaned = cleaned[:n]
+	}
+	return cleaned
+}
+
 // registerNewMember asks the visitor to choose a username, then creates their
 // member account under it. The name is sanitized to the hub/subdomain charset,
 // rejected if reserved, and must be free; pressing enter accepts a generated
-// member-<fp8> default. Returns the created user.
+// member-<fp8> default. The chosen name is also the member's pod home
+// (/home/<name>), so it must be a safe shell/filesystem token — the sanitizer
+// (and the default below) keep it to lowercase [a-z0-9-]. Returns the user.
 func (a *app) registerNewMember(s ssh.Session, in *bufio.Reader, fp string) (store.User, error) {
-	def := "member-" + strings.ToLower(strings.TrimPrefix(fp, "SHA256:"))[:8]
+	def := "member-" + fpToken(fp, 8)
 	wish.Println(s, "\n  Pick a username — letters, numbers and dashes, 3–20 chars.")
-	wish.Println(s, "  It's your handle for  ssh <name>@"+a.host+"  and  https://"+a.host+"/~<name>.")
+	wish.Println(s, "  It's your handle for  ssh <name>@"+a.host+"  (your pod home is /home/<name>).")
 
 	for tries := 0; tries < 5; tries++ {
 		wish.Print(s, "\n  Username ["+def+"]: ")
@@ -651,23 +764,19 @@ func (a *app) ensurePremium(u *store.User) bool {
 	return true
 }
 
-// showPremiumWelcome prints a premium member's perks: their personal email,
-// where it forwards, the webmail URL, and custom domains.
+// showPremiumWelcome prints a premium member's perks: their mailbox, the webmail
+// URL, the in-hub Mail/Tor entries, and custom domains.
 func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	lines := []string{
 		"",
 		"  ★ Founding Lifetime Member — thanks! Your perks:",
 		"",
-		"  email      " + a.fe.Address(u.Name),
-		"  forwards   " + u.Email,
-	}
-	if url := a.fe.WebmailURL(); url != "" {
-		lines = append(lines, "  webmail    "+url)
-	}
-	lines = append(lines,
-		"  domains    ssh domain@"+a.host+" add <yourdomain.com>",
+		"  mailbox    " + a.fe.Address(u.Name),
+		"  webmail    https://" + a.fe.Domain,
+		"  mail/tor   pick “Mail” or “Tor shell” in the hub: ssh " + u.Name + "@" + a.host,
+		"  domains    ssh domain@" + a.host + " add <yourdomain.com>",
 		"",
-	)
+	}
 	wish.Println(s, strings.Join(lines, "\n"))
 }
 
@@ -691,10 +800,10 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		"",
 		"  Everything in your free membership stays free — founding adds these",
 		"  bonus features, forever:",
-		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you, webmail included)",
-		"    • custom domains   point yourdomain.com at your homepage",
-		"    • Tor access       ssh tor@" + a.host + " — fetch URLs & join IRC over Tor",
-		"    • locked-in price  founding rate is yours for life — never renew, never pay again",
+		"    • your own mailbox  " + a.fe.Address(u.Name) + "  (webmail: https://" + a.fe.Domain + ")",
+		"    • custom domains    point yourdomain.com at your homepage",
+		"    • Tor               a “Tor shell” in your pod — everything over Tor",
+		"    • locked-in price   founding rate is yours for life — never renew, never pay again",
 		"",
 	}
 	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
@@ -1071,21 +1180,28 @@ func (a *app) handleIRC(s ssh.Session) {
 	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "irc")
 	defer func() { _ = a.st.EndSession(sessID) }()
 
+	// Premium members may /create channels; free members can still join existing
+	// ones. ensurePremium also settles any pending charge.
+	if err := a.runIRC(s, u.Name, a.ensurePremium(&u)); err != nil {
+		wish.Println(s, "irc: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
+// runIRC dials the members-only IRC network as name and runs the in-process
+// client TUI on the session. Shared by the irc@ route and the hub's IRC entry.
+func (a *app) runIRC(s ssh.Session, name string, canCreate bool) error {
 	addr := strings.TrimSpace(os.Getenv("AGENTBBS_IRC_ADDR"))
 	if addr == "" {
 		addr = irc.DefaultAddr
 	}
-	log.Info("irc connect", "user", u.Name, "addr", addr)
-	c, err := irc.Dial(s.Context(), addr, u.Name)
+	log.Info("irc connect", "user", name, "addr", addr)
+	c, err := irc.Dial(s.Context(), addr, name)
 	if err != nil {
-		wish.Println(s, "irc: "+err.Error())
-		_ = s.Exit(1)
-		return
+		return err
 	}
 	_ = c.Join(irc.DefaultChannel)
-	if err := irc.Run(s, c); err != nil {
-		wish.Println(s, "irc: "+err.Error())
-	}
+	return irc.Run(s, c, canCreate)
 }
 
 // handleNews drops a member into the BBS's own (members-only) Usenet/NNTP server
@@ -1114,15 +1230,21 @@ func (a *app) handleNews(s ssh.Session) {
 	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "news")
 	defer func() { _ = a.st.EndSession(sessID) }()
 
+	if err := a.runNews(s, u.Name); err != nil {
+		wish.Println(s, "news: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
+// runNews runs the in-process newsreader TUI for name on the session. Shared by
+// the news@ route and the hub's News entry.
+func (a *app) runNews(s ssh.Session, name string) error {
 	addr := a.newsAddr
 	if addr == "" {
 		addr = news.DefaultAddr
 	}
-	log.Info("news connect", "user", u.Name, "addr", addr)
-	if err := news.RunReader(s, addr, u.Name); err != nil {
-		wish.Println(s, "news: "+err.Error())
-		_ = s.Exit(1)
-	}
+	log.Info("news connect", "user", name, "addr", addr)
+	return news.RunReader(s, addr, name)
 }
 
 // handleTorCmd runs an arbitrary command through Tor (torsocks) inside the
