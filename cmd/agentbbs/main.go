@@ -194,8 +194,9 @@ func main() {
 }
 
 // router dispatches a session by username (PRD §4.4 + pods addendum).
-// The active-PTY guard applies to hub sessions only: join@ must work without
-// a terminal (it prints and disconnects), and pod@ checks its PTY itself.
+// The active-PTY guard applies to hub sessions only; join@ and pod@ check their
+// own PTY (both are interactive) so they can return a tailored hint instead of
+// activeterm's opaque rejection.
 func (a *app) router() wish.Middleware {
 	btMw := bm.Middleware(a.teaHandler)
 	adminMw := bm.Middleware(a.adminTeaHandler)
@@ -288,6 +289,15 @@ func (a *app) handleJoin(s ssh.Session) {
 	fp := auth.Fingerprint(s.PublicKey())
 	if fp == "" {
 		wish.Println(s, "join@ needs an SSH public key (try: ssh -i ~/.ssh/id_ed25519 join@"+a.host+")")
+		_ = s.Exit(1)
+		return
+	}
+	// Onboarding reads an email and a verification code interactively, so it
+	// needs a terminal. Without a PTY the prompts would block forever (e.g. ssh
+	// launched with no controlling tty, which delegates prompts to ssh-askpass).
+	// Fail fast with a hint instead of hanging.
+	if _, _, hasPty := s.Pty(); !hasPty {
+		wish.Println(s, "join@ is interactive — reconnect with a terminal: ssh -t join@"+a.host)
 		_ = s.Exit(1)
 		return
 	}
