@@ -4,22 +4,22 @@
 # membership. setup.sh installs this to /usr/local/bin/ergo-auth-member and
 # wires it into /etc/ergo/ircd.yaml (accounts.auth-script).
 #
-# AgentBBS members are real OS users (tilde.town model; setup.sh provisions an
-# OS account per member). IRC is members-only, so a login is approved iff the
-# requested account name is a real OS user with uid >= MIN_UID (which excludes
-# system accounts like root/ergo/agentbbs). The passphrase is intentionally
-# IGNORED — membership (being an OS user) IS the credential, by design (see
-# docs/irc.md). Anyone who knows a member's name can connect as them; that
-# tradeoff was chosen deliberately for this private, TLS-only network.
+# The single source of truth is the BBS user store (the bbs.profullstack.com
+# accounts), queried via a loopback agentbbs endpoint (/irc-auth) that answers
+# {"member":bool,"premium":bool}. IRC is members-only, so a login is approved iff
+# the account is a member. The passphrase is intentionally IGNORED — BBS
+# membership IS the credential, by design (see docs/irc.md). Anyone who knows a
+# member's name can connect as them; that tradeoff was chosen deliberately for
+# this private, TLS-only network.
 #
 # Protocol (Ergo): one JSON object on stdin per attempt, one JSON line on stdout
 # then exit. Input keys: accountName, passphrase, certfp, ip. Output:
 # {"success":bool,"accountName":str,"error":str}.
 #
-#   args: ["<min-uid>"]   # defaults to 1000
+#   args: ["<auth-url>"]   # defaults to http://127.0.0.1:8088/irc-auth
 set -uo pipefail
 
-MIN_UID="${1:-1000}"
+AUTH_URL="${1:-http://127.0.0.1:8088/irc-auth}"
 
 # Always emit valid JSON and exit 0 — Ergo reads the JSON, not the exit code;
 # a non-zero exit / no output is treated as a script error, not a clean deny.
@@ -41,17 +41,13 @@ case "$acct" in
   *[!A-Za-z0-9._-]* | "." | ".." ) deny "invalid account name" ;;
 esac
 
-# Resolve the OS account; getent passwd returns name:passwd:uid:gid:...
-entry="$(getent passwd "$acct" 2>/dev/null || true)"
-[ -n "$entry" ] || deny "not a member"
+# Ask the BBS store (loopback) whether this account is a member. curl URL-encodes
+# the account name; a failed/timed-out request denies (fail closed).
+resp="$(curl -fsS --max-time 5 --get --data-urlencode "account=${acct}" "$AUTH_URL" 2>/dev/null || true)"
+member="$(printf '%s' "$resp" | jq -r '.member // false' 2>/dev/null || true)"
 
-uid="$(printf '%s' "$entry" | cut -d: -f3)"
-case "$uid" in
-  ''|*[!0-9]*) deny "not a member" ;;
-esac
-
-if [ "$uid" -ge "$MIN_UID" ]; then
+if [ "$member" = "true" ]; then
   printf '{"success":true,"accountName":"%s"}\n' "$acct"
 else
-  deny "system accounts cannot use IRC"
+  deny "not a member"
 fi

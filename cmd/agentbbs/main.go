@@ -58,7 +58,6 @@ import (
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
-	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
@@ -205,6 +204,7 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/verify", a.handleVerify)
+		mux.HandleFunc("/irc-auth", a.handleIRCAuth) // Ergo auth-script: members-only gate
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 		log.Info("verify endpoint listening", "addr", verifyAddr)
 		srv := &http.Server{Addr: verifyAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -312,8 +312,6 @@ func (a *app) router() wish.Middleware {
 				a.handleTorIRC(s)
 			case auth.IsTorName(user):
 				a.handleTorCmd(s)
-			case auth.IsIRCName(user):
-				a.handleIRC(s)
 			case auth.IsNewsName(user):
 				a.handleNews(s)
 			case isVideo:
@@ -450,17 +448,8 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 		Cmd:         sessionExec{run: func() error { return a.pods.Attach(s, su.Name) }},
 	})
 
-	// IRC — free for any registered member.
-	ircLock := ""
-	if guest {
-		ircLock = membersOnly
-	}
-	apps = append(apps, hub.SessionApp{
-		Title:       "IRC",
-		Description: "members-only chat network (humans + agents)",
-		Locked:      ircLock,
-		Cmd:         sessionExec{run: func() error { return a.runIRC(s, su.Name, su.Premium) }},
-	})
+	// IRC is members-only but accessed with an external client (or web) at
+	// irc.profullstack.com — not an in-BBS route — so it's not a hub menu item.
 
 	// News — free for any registered member.
 	newsLock := ""
@@ -1183,53 +1172,27 @@ func (a *app) handleTorIRC(s ssh.Session) {
 	}
 }
 
-// handleIRC drops a member into the BBS's own (members-only) IRC network using
-// an in-process client: it authenticates to Ergo over SASL as the member and
-// runs a Bubble Tea TUI. Free for any registered member; needs a PTY. Distinct
-// from tor-irc@ (a client for remote servers over Tor).
-func (a *app) handleIRC(s ssh.Session) {
-	fp := auth.Fingerprint(s.PublicKey())
-	if fp == "" {
-		wish.Println(s, "irc@ needs your registered SSH key. New here? ssh join@"+a.host)
-		_ = s.Exit(1)
+// handleIRCAuth is the loopback endpoint Ergo's auth-script calls to gate the
+// IRC network on BBS membership — the single user-level source of truth. It
+// answers {member, premium} for an account name: only members may connect, and
+// premium (lifetime-paid) drives paid IRC features. Loopback only (shares the
+// /verify server), so only the on-box Ergo can reach it. There is no in-BBS
+// irc@ route: members use an external client (or web) at irc.profullstack.com.
+func (a *app) handleIRCAuth(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("account"))
+	w.Header().Set("Content-Type", "application/json")
+	u, found, err := a.st.UserByName(name)
+	if err != nil || !found || u.Banned {
+		_, _ = io.WriteString(w, `{"member":false,"premium":false}`)
 		return
 	}
-	u, found, err := a.st.UserByFingerprint(fp)
-	if err != nil || !found {
-		wish.Println(s, "the IRC network is members-only — register first: ssh join@"+a.host)
-		_ = s.Exit(1)
+	// u.Premium is the stored lifetime flag; we don't run the (network) CoinPay
+	// settlement check on a per-connect auth hook — that happens at join@/hub.
+	if u.Premium {
+		_, _ = io.WriteString(w, `{"member":true,"premium":true}`)
 		return
 	}
-	if u.Banned {
-		wish.Println(s, "this account is suspended.")
-		_ = s.Exit(1)
-		return
-	}
-	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "irc")
-	defer func() { _ = a.st.EndSession(sessID) }()
-
-	// Premium members may /create channels; free members can still join existing
-	// ones. ensurePremium also settles any pending charge.
-	if err := a.runIRC(s, u.Name, a.ensurePremium(&u)); err != nil {
-		wish.Println(s, "irc: "+err.Error())
-		_ = s.Exit(1)
-	}
-}
-
-// runIRC dials the members-only IRC network as name and runs the in-process
-// client TUI on the session. Shared by the irc@ route and the hub's IRC entry.
-func (a *app) runIRC(s ssh.Session, name string, canCreate bool) error {
-	addr := strings.TrimSpace(os.Getenv("AGENTBBS_IRC_ADDR"))
-	if addr == "" {
-		addr = irc.DefaultAddr
-	}
-	log.Info("irc connect", "user", name, "addr", addr)
-	c, err := irc.Dial(s.Context(), addr, name)
-	if err != nil {
-		return err
-	}
-	_ = c.Join(irc.DefaultChannel)
-	return irc.Run(s, c, canCreate)
+	_, _ = io.WriteString(w, `{"member":true,"premium":false}`)
 }
 
 // handleNews drops a member into the BBS's own (members-only) Usenet/NNTP server

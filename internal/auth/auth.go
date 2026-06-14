@@ -56,9 +56,9 @@ var TorIRCNames = map[string]bool{"tor-irc": true}
 // member's pod (premium). Checked after the more specific tor-* routes.
 var TorNames = map[string]bool{"tor": true}
 
-// IRCNames route a member straight into the BBS's own (members-only) IRC
-// network via an in-process client. Distinct from tor-irc@, which is a client
-// for connecting OUT to remote IRC servers over Tor.
+// IRCNames is kept only to reserve "irc" as an account/subdomain name: the BBS
+// hosts its own IRC network at irc.<domain> but there is no in-BBS irc@ route —
+// members connect with an external client. (Distinct from tor-irc@.)
 var IRCNames = map[string]bool{"irc": true}
 
 // NewsNames route a member into the BBS's own (members-only) Usenet/NNTP server
@@ -92,9 +92,6 @@ func IsTorIRCName(u string) bool { return TorIRCNames[strings.ToLower(u)] }
 
 // IsTorName reports whether the SSH username requests the generic tor passthrough.
 func IsTorName(u string) bool { return TorNames[strings.ToLower(u)] }
-
-// IsIRCName reports whether the SSH username requests the in-BBS IRC client.
-func IsIRCName(u string) bool { return IRCNames[strings.ToLower(u)] }
 
 // IsNewsName reports whether the SSH username requests the in-BBS newsreader.
 func IsNewsName(u string) bool { return NewsNames[strings.ToLower(u)] }

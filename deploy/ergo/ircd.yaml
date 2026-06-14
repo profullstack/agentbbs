@@ -18,10 +18,10 @@
 # for a mixed humans + agents network: it is MEMBERS-ONLY — every client must
 # authenticate with SASL, self-service registration is OFF, and an auth-script
 # (deploy/ergo/auth-script.sh, installed as /usr/local/bin/ergo-auth-member)
-# approves a login only if the account name is a real OS user (uid>=1000).
-# BBS members are provisioned as OS users (tilde.town model; setup.sh §4b/§9a2),
-# so "OS user" == "BBS member". Message history (CHATHISTORY) is enabled so
-# reconnecting agents and web clients can replay. See docs/irc.md.
+# approves a login only if the BBS user store says the account is a member (it
+# queries the loopback agentbbs /irc-auth endpoint — the single user-level source
+# of truth). Message history (CHATHISTORY) is enabled so reconnecting agents and
+# web clients can replay. See docs/irc.md.
 #
 # Most settings keep Ergo's recommended defaults — read the inline comments
 # before changing one. A few worth knowing about:
@@ -53,8 +53,8 @@ server:
                 key: __TLS_DIR__/privkey.pem
             min-tls-version: 1.2
 
-        # Loopback plaintext (6667) — never exposed (firewall blocks it). Used by
-        # the in-BBS bridge and local tooling on the agentbbs box only.
+        # Loopback plaintext (6667) — never exposed (firewall blocks it). For
+        # on-box tooling/bridges only (must still SASL as a member).
         "127.0.0.1:6667":
         "[::1]:6667":
 
@@ -597,13 +597,14 @@ accounts:
     # pluggable authentication mechanism, via subprocess invocation
     # see the manual for details on how to write an authentication plugin script
     auth-script:
-        # MEMBERS-ONLY gate: ergo-auth-member approves a login iff the account
-        # name is a real OS user with uid >= the arg (BBS members are OS users).
+        # MEMBERS-ONLY gate: ergo-auth-member asks the BBS user store (via the
+        # loopback /irc-auth endpoint passed as the arg) whether the account is a
+        # member, and approves the login iff so.
         enabled: true
         command: "/usr/local/bin/ergo-auth-member"
-        # min-uid is passed as a constant arg (excludes system accounts like
-        # ergo/root); the per-attempt auth data is sent over stdin/stdout:
-        args: ["1000"]
+        # the loopback auth URL is passed as a constant arg; the per-attempt auth
+        # data (accountName/passphrase/ip) is sent over stdin/stdout:
+        args: ["__IRC_AUTH_URL__"]
         # auto-create the Ergo account on first successful (member) auth, so
         # members never have to register:
         autocreate: true
