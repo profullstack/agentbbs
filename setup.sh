@@ -457,7 +457,10 @@ systemctl reload caddy 2>/dev/null || systemctl restart caddy
 log "configuring firewall + starting agentbbs"
 ufw allow 22/tcp >/dev/null
 ufw --force enable >/dev/null
-systemctl enable --now agentbbs
+# enable + restart (not just `enable --now`): a redeploy rebuilds the binary, and
+# `enable --now` would leave the OLD process running, so the new build wouldn't load.
+systemctl enable agentbbs >/dev/null 2>&1 || true
+systemctl restart agentbbs
 
 sleep 1
 systemctl is-active --quiet agentbbs \
