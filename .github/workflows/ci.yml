@@ -1,0 +1,32 @@
+# Go CI for agentbbs. agentbbs is a Go project (see go.mod), so this builds and
+# vets every package on pushes to main and on pull requests. The companion
+# test.yml runs `go test`.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - run: go build ./...
+
+      - run: go vet ./...
