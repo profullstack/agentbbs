@@ -1,13 +1,11 @@
-# Managed by sh1pt Actions Fleet
-# pack: node-pnpm-test@1.1.0
-# install: sh1pt-actions-store
-# hash: sha256:d753421a4244bd39c13dd7444a29709ac978395b34c359adf0be2bfec9e48268
+# Go tests for agentbbs. agentbbs is a Go project (see go.mod); this runs the
+# package tests on pull requests and pushes to main. Build/vet live in ci.yml.
 name: test
 
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -19,18 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm version is read from the "packageManager" field in package.json.
-      # Do not pin a version here — it conflicts with packageManager and fails
-      # with ERR_PNPM_BAD_PM_VERSION.
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 22
-          cache: pnpm
+          go-version: '1.26'
+          cache: true
 
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm test
-        env:
-          CI: true
+      - run: go test ./...
