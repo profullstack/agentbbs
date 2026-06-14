@@ -297,6 +297,8 @@ upsert_env() {  # KEY VALUE — skips when VALUE is empty
 upsert_env COINPAY_API_KEY "${COINPAY_API_KEY:-}"
 upsert_env AGENTBBS_COINPAY_MERCHANT_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
 upsert_env COINPAY_BUSINESS_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
+# qrypt.chat invite issuer: Ed25519 seed (minting is disabled without it).
+upsert_env AGENTBBS_QRYPT_ISSUER_KEY "${AGENTBBS_QRYPT_ISSUER_KEY:-}"
 
 # ---- 7. systemd unit (runs as $SVC_USER, binds :22 via ambient capability) --
 log "installing agentbbs.service"

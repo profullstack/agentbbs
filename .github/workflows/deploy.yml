@@ -55,6 +55,7 @@ jobs:
           # GitHub masks these in logs; setup.sh upserts them idempotently.
           COINPAY_API_KEY: ${{ secrets.COINPAY_API_KEY }}
           COINPAY_MERCHANT_ID: ${{ secrets.COINPAY_MERCHANT_ID }}
+          AGENTBBS_QRYPT_ISSUER_KEY: ${{ secrets.AGENTBBS_QRYPT_ISSUER_KEY }}
         run: |
           ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
               -o BatchMode=yes -o StrictHostKeyChecking=yes \
@@ -62,6 +63,7 @@ jobs:
               "sudo -n env BRANCH=$(printf %q "$DEPLOY_BRANCH") \
                  COINPAY_API_KEY=$(printf %q "$COINPAY_API_KEY") \
                  COINPAY_MERCHANT_ID=$(printf %q "$COINPAY_MERCHANT_ID") \
+                 AGENTBBS_QRYPT_ISSUER_KEY=$(printf %q "$AGENTBBS_QRYPT_ISSUER_KEY") \
                  bash -s" <<'REMOTE'
           set -euo pipefail
           REPO=https://github.com/profullstack/agentbbs.git
@@ -77,6 +79,7 @@ jobs:
           exec env BRANCH="$BRANCH" \
             COINPAY_API_KEY="${COINPAY_API_KEY:-}" \
             COINPAY_MERCHANT_ID="${COINPAY_MERCHANT_ID:-}" \
+            AGENTBBS_QRYPT_ISSUER_KEY="${AGENTBBS_QRYPT_ISSUER_KEY:-}" \
             "$SRC/setup.sh"
           REMOTE
 
