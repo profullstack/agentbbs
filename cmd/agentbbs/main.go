@@ -5,7 +5,7 @@
 //	ssh bbs@host    the BBS hub, guests welcome (play@/guest@ are aliases)
 //	ssh <name>@host the hub as a member/agent (SSH key required)
 //	ssh join@host   onboarding: registers your key, confirms your email with an
-//	                emailed code, then offers $10 lifetime Premium (CoinPay)
+//	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
@@ -53,11 +53,13 @@ import (
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
+	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
+	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/pods"
@@ -96,12 +98,14 @@ type app struct {
 	sandbox  *sandbox.Runner
 	mail     mail.Config
 	fe       forwardemail.Config // premium @bbs email provisioning
+	forgejo  forgejo.Config      // AgentGit git.profullstack.com account provisioning
 	live     *liveReg            // in-memory live-session registry (admin console)
 	gamesReg *games.Registry     // AgentGames catalog
 	mm       *games.Matchmaker   // AgentGames matchmaker (agent-vs-agent)
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
+	newsAddr string // loopback NNTP address the news@ reader dials
 }
 
 func main() {
@@ -145,6 +149,7 @@ func main() {
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
 		mail:    mail.ConfigFromEnv(),
 		fe:      fe,
+		forgejo: forgejo.ConfigFromEnv(),
 		live:    newLiveReg(),
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
@@ -200,6 +205,36 @@ func main() {
 	// AgentGames WebSocket endpoint (twin of the game@ SSH route). Loopback;
 	// Caddy proxies wss://host/play to it.
 	go a.serveGameWS(env("AGENTBBS_GAME_WS_ADDR", "127.0.0.1:8090"))
+
+	// News (NNTP) server: the members-only Usenet network (docs/news.md). The
+	// loopback plaintext listener backs the in-BBS news@ reader; the public
+	// NNTPS listener (:563, TLS) serves desktop newsreaders and agents. Free for
+	// every registered member, like irc@. Disable with AGENTBBS_NEWS=0.
+	a.newsAddr = env("AGENTBBS_NEWS_ADDR", news.DefaultAddr)
+	if env("AGENTBBS_NEWS", "1") == "1" {
+		newsHost := env("AGENTBBS_NEWS_HOST", "news."+strings.TrimPrefix(host, "bbs."))
+		ns := news.New(st, newsHost)
+		if err := ns.SeedGroups(news.ParseGroups(os.Getenv("AGENTBBS_NEWS_GROUPS"))); err != nil {
+			log.Warn("news seed groups", "err", err)
+		}
+		go func() {
+			log.Info("news loopback listening", "addr", a.newsAddr)
+			if err := ns.ServeLoopback(context.Background(), a.newsAddr); err != nil {
+				log.Error("news loopback", "err", err)
+			}
+		}()
+		if cert, key := os.Getenv("AGENTBBS_NEWS_TLS_CERT"), os.Getenv("AGENTBBS_NEWS_TLS_KEY"); cert != "" && key != "" {
+			tlsAddr := env("AGENTBBS_NEWS_TLS_ADDR", ":563")
+			go func() {
+				log.Info("news NNTPS listening", "addr", tlsAddr, "host", newsHost)
+				if err := ns.ServeTLS(context.Background(), tlsAddr, cert, key); err != nil {
+					log.Error("news nntps", "err", err)
+				}
+			}()
+		} else {
+			log.Warn("news NNTPS disabled (no AGENTBBS_NEWS_TLS_CERT/KEY) — loopback news@ reader still works")
+		}
+	}
 
 	addr := env("AGENTBBS_ADDR", ":2222")
 	srv, err := wish.NewServer(
@@ -268,6 +303,8 @@ func (a *app) router() wish.Middleware {
 				a.handleTorCmd(s)
 			case auth.IsIRCName(user):
 				a.handleIRC(s)
+			case auth.IsNewsName(user):
+				a.handleNews(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -372,7 +409,7 @@ func readLine(s ssh.Session, in *bufio.Reader) (string, error) {
 
 // handleJoin runs onboarding interactively in one SSH session: register the
 // visitor's key, confirm their email with a code we email them, then offer the
-// $10 lifetime Premium membership (CoinPay). It then disconnects.
+// $99 Founding Lifetime membership (CoinPay). It then disconnects.
 func (a *app) handleJoin(s ssh.Session) {
 	fp := auth.Fingerprint(s.PublicKey())
 	if fp == "" {
@@ -397,9 +434,15 @@ func (a *app) handleJoin(s ssh.Session) {
 		return
 	}
 	if !found {
-		// New key: let the visitor pick their own handle before we create the
-		// account (a returning key keeps the name it already chose).
+		// New key: show the acceptable-use terms and require acceptance before
+		// creating the account, then let the visitor pick their own handle (a
+		// returning key keeps the name it already chose).
 		wish.Println(s, "\n  Welcome to AgentBBS — let's set up your account.")
+		if !a.acceptTerms(s, in) {
+			wish.Println(s, "\n  You must accept the terms to register — no account was created.")
+			_ = s.Exit(1)
+			return
+		}
 		if u, err = a.registerNewMember(s, in, fp); err != nil {
 			wish.Fatalln(s, "registration error: "+err.Error())
 			return
@@ -432,9 +475,36 @@ func (a *app) handleJoin(s ssh.Session) {
 		"    homepage  https://" + a.host + "/~" + u.Name,
 	}, "\n"))
 
-	// 2) Premium ($10 lifetime): personal @host email + custom domains.
+	// 2) Founding Lifetime ($99 one-time): personal @host email + custom domains.
 	a.offerPremium(s, &u)
 	_ = s.Exit(0)
+}
+
+// acceptTerms shows the acceptable-use terms and requires the visitor to type
+// "agree" before an account is created. AgentBBS is for lawful use only; illegal
+// activity is grounds for an immediate, permanent ban. Returns true on acceptance.
+func (a *app) acceptTerms(s ssh.Session, in *bufio.Reader) bool {
+	wish.Println(s, "\n"+strings.Join([]string{
+		"  Terms of use — please read before you join:",
+		"    • AgentBBS is for LAWFUL use only. Illegal activity is not permitted",
+		"      and will result in an immediate, permanent ban — and may be reported",
+		"      to the relevant authorities.",
+		"    • Don't abuse the service, other members, or the shared infrastructure,",
+		"      and don't use it to harm others.",
+		"    • You are responsible for everything you — and any agents you run —",
+		"      do here.",
+	}, "\n"))
+	wish.Print(s, "\n  Type \"agree\" to accept and continue: ")
+	line, err := readLine(s, in)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "agree", "i agree", "agreed", "yes", "y":
+		return true
+	default:
+		return false
+	}
 }
 
 // registerNewMember asks the visitor to choose a username, then creates their
@@ -534,6 +604,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 		}
 		if ok {
 			*u = vu
+			a.provisionGit(u)
 			wish.Println(s, "  Email confirmed ✓")
 			return true
 		}
@@ -577,7 +648,7 @@ func (a *app) ensurePremium(u *store.User) bool {
 func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	lines := []string{
 		"",
-		"  ★ Premium — thanks! Your perks:",
+		"  ★ Founding Lifetime Member — thanks! Your perks:",
 		"",
 		"  email      " + a.fe.Address(u.Name),
 		"  forwards   " + u.Email,
@@ -592,7 +663,7 @@ func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	wish.Println(s, strings.Join(lines, "\n"))
 }
 
-// offerPremium pitches the $10 lifetime membership — a personal @host email and
+// offerPremium pitches the $99 Founding Lifetime membership — a personal @host email and
 // custom domains. When CoinPay can mint a charge in-session it shows the exact
 // amount and deposit address; otherwise it falls back to a pay command.
 // Non-blocking: the member pays out of band and perks unlock on their next
@@ -607,9 +678,15 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 
 	lines := []string{
 		"",
-		"  Upgrade to Premium — " + payments.PremiumPriceLabel + ", one-time:",
-		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you)",
+		"  ★ Founding Lifetime Member — $" + payments.PremiumAmount() + ", one-time",
+		"    Only the first " + payments.FoundingCap + " accounts. Pay once, keep it for life.",
+		"",
+		"  Everything in your free membership stays free — founding adds these",
+		"  bonus features, forever:",
+		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you, webmail included)",
 		"    • custom domains   point yourdomain.com at your homepage",
+		"    • Tor access       ssh tor@" + a.host + " — fetch URLs & join IRC over Tor",
+		"    • locked-in price  founding rate is yours for life — never renew, never pay again",
 		"",
 	}
 	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
@@ -706,8 +783,28 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
 		return
 	}
+	a.provisionGit(&u)
 	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
 		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
+}
+
+// provisionGit ensures a verified member has a git.profullstack.com account on
+// the AgentGit Forgejo backend. Every verified member gets one — free and paid
+// alike; plan only affects quotas, enforced by AgentGit, not account existence.
+// Failures are logged but never block BBS verification, and it is a no-op when
+// Forgejo is unconfigured.
+func (a *app) provisionGit(u *store.User) {
+	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
+		return
+	}
+	created, err := a.forgejo.EnsureUser(u.Name, u.Email)
+	if err != nil {
+		log.Error("forgejo provision", "user", u.Name, "err", err)
+		return
+	}
+	if created {
+		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	}
 }
 
 // verifyPage renders the minimal confirmation result page.
@@ -739,7 +836,7 @@ func (a *app) handleDomain(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
-	// Custom domains are a Premium perk ($10 lifetime). ensurePremium also
+	// Custom domains are a Founding Lifetime perk ($99 one-time). ensurePremium also
 	// catches a payment that settled since their last visit.
 	if !a.ensurePremium(&u) {
 		wish.Println(s, strings.Join([]string{
@@ -883,7 +980,7 @@ func (a *app) torMember(s ssh.Session, route string) (store.User, bool) {
 		return store.User{}, false
 	}
 	if !a.ensurePremium(&u) {
-		wish.Println(s, "  "+route+" is a Premium feature ($10 lifetime). Upgrade: ssh join@"+a.host)
+		wish.Println(s, "  "+route+" is a Founding Lifetime Member feature ($99 one-time, lifetime). Upgrade: ssh join@"+a.host)
 		_ = s.Exit(1)
 		return store.User{}, false
 	}
@@ -980,6 +1077,43 @@ func (a *app) handleIRC(s ssh.Session) {
 	_ = c.Join(irc.DefaultChannel)
 	if err := irc.Run(s, c); err != nil {
 		wish.Println(s, "irc: "+err.Error())
+	}
+}
+
+// handleNews drops a member into the BBS's own (members-only) Usenet/NNTP server
+// using an in-process newsreader: it authenticates to the loopback NNTP listener
+// as the member and runs a Bubble Tea TUI to browse groups, read, and post. Free
+// for any registered member; needs a PTY. External newsreaders and agents reach
+// the same server over NNTPS at news.<host>:563.
+func (a *app) handleNews(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "news@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "the news server is members-only — register first: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "news")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	addr := a.newsAddr
+	if addr == "" {
+		addr = news.DefaultAddr
+	}
+	log.Info("news connect", "user", u.Name, "addr", addr)
+	if err := news.RunReader(s, addr, u.Name); err != nil {
+		wish.Println(s, "news: "+err.Error())
+		_ = s.Exit(1)
 	}
 }
 

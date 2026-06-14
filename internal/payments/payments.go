@@ -1,4 +1,4 @@
-// Package payments gates the one-time $10 lifetime Premium membership on
+// Package payments gates the one-time $99 Founding Lifetime membership on
 // CoinPay (coinpayportal.com). It talks to the CoinPay REST API directly over
 // HTTP — no `coinpay` CLI needs to be installed on the host.
 //
@@ -7,7 +7,7 @@
 //	COINPAY_API_KEY                Bearer key for the CoinPay API (cp_live_…)
 //	AGENTBBS_COINPAY_MERCHANT_ID   merchant/business id payments are created under
 //	AGENTBBS_COINPAY_API_URL       API base (default https://coinpayportal.com/api)
-//	AGENTBBS_PREMIUM_AMOUNT        fiat amount (default 10)
+//	AGENTBBS_PREMIUM_AMOUNT        fiat amount (default 99)
 //	AGENTBBS_PREMIUM_CURRENCY      fiat currency (default USD)
 //	AGENTBBS_PREMIUM_BLOCKCHAIN    settlement chain (default eth)
 //
@@ -35,11 +35,15 @@ const PodTerm = 31 * 24 * time.Hour
 
 // PremiumPriceLabel is the human-readable price for the one-time lifetime
 // membership offered at join@.
-const PremiumPriceLabel = "$10 (lifetime)"
+const PremiumPriceLabel = "$99 (lifetime)"
+
+// FoundingCap is the marketing cap on Founding Lifetime memberships — the offer
+// is pitched as available to the first this-many accounts.
+const FoundingCap = "1,000"
 
 // Premium charge parameters — overridable via env so the offer can change
 // without a rebuild.
-func PremiumAmount() string     { return envOr("AGENTBBS_PREMIUM_AMOUNT", "10") }
+func PremiumAmount() string     { return envOr("AGENTBBS_PREMIUM_AMOUNT", "99") }
 func PremiumCurrency() string   { return envOr("AGENTBBS_PREMIUM_CURRENCY", "USD") }
 func PremiumBlockchain() string { return envOr("AGENTBBS_PREMIUM_BLOCKCHAIN", "eth") }
 
