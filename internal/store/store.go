@@ -82,8 +82,8 @@ type Store interface {
 	// SetPremiumPayment records the CoinPay payment id of a pending premium
 	// charge so a later visit can verify whether it settled.
 	SetPremiumPayment(userID int64, payID string) error
-	// GrantPremium marks the account as a lifetime premium member (the $10
-	// one-time membership), recording the CoinPay payment reference. Idempotent.
+	// GrantPremium marks the account as a lifetime premium member (the $99
+	// Founding Lifetime membership), recording the CoinPay payment reference. Idempotent.
 	GrantPremium(userID int64, paymentRef string) error
 
 	RecordSession(userID int64, username, remote, route string) (int64, error)

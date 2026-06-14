@@ -5,7 +5,7 @@
 //	ssh bbs@host    the BBS hub, guests welcome (play@/guest@ are aliases)
 //	ssh <name>@host the hub as a member/agent (SSH key required)
 //	ssh join@host   onboarding: registers your key, confirms your email with an
-//	                emailed code, then offers $10 lifetime Premium (CoinPay)
+//	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
@@ -372,7 +372,7 @@ func readLine(s ssh.Session, in *bufio.Reader) (string, error) {
 
 // handleJoin runs onboarding interactively in one SSH session: register the
 // visitor's key, confirm their email with a code we email them, then offer the
-// $10 lifetime Premium membership (CoinPay). It then disconnects.
+// $99 Founding Lifetime membership (CoinPay). It then disconnects.
 func (a *app) handleJoin(s ssh.Session) {
 	fp := auth.Fingerprint(s.PublicKey())
 	if fp == "" {
@@ -432,7 +432,7 @@ func (a *app) handleJoin(s ssh.Session) {
 		"    homepage  https://" + a.host + "/~" + u.Name,
 	}, "\n"))
 
-	// 2) Premium ($10 lifetime): personal @host email + custom domains.
+	// 2) Founding Lifetime ($99 one-time): personal @host email + custom domains.
 	a.offerPremium(s, &u)
 	_ = s.Exit(0)
 }
@@ -577,7 +577,7 @@ func (a *app) ensurePremium(u *store.User) bool {
 func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	lines := []string{
 		"",
-		"  ★ Premium — thanks! Your perks:",
+		"  ★ Founding Lifetime Member — thanks! Your perks:",
 		"",
 		"  email      " + a.fe.Address(u.Name),
 		"  forwards   " + u.Email,
@@ -592,7 +592,7 @@ func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	wish.Println(s, strings.Join(lines, "\n"))
 }
 
-// offerPremium pitches the $10 lifetime membership — a personal @host email and
+// offerPremium pitches the $99 Founding Lifetime membership — a personal @host email and
 // custom domains. When CoinPay can mint a charge in-session it shows the exact
 // amount and deposit address; otherwise it falls back to a pay command.
 // Non-blocking: the member pays out of band and perks unlock on their next
@@ -607,9 +607,15 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 
 	lines := []string{
 		"",
-		"  Upgrade to Premium — " + payments.PremiumPriceLabel + ", one-time:",
-		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you)",
+		"  ★ Founding Lifetime Member — $" + payments.PremiumAmount() + ", one-time",
+		"    Only the first " + payments.FoundingCap + " accounts. Pay once, keep it for life.",
+		"",
+		"  Everything in your free membership stays free — founding adds these",
+		"  bonus features, forever:",
+		"    • your own email   " + a.fe.Address(u.Name) + " (forwards to you, webmail included)",
 		"    • custom domains   point yourdomain.com at your homepage",
+		"    • Tor access       ssh tor@" + a.host + " — fetch URLs & join IRC over Tor",
+		"    • locked-in price  founding rate is yours for life — never renew, never pay again",
 		"",
 	}
 	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
@@ -739,7 +745,7 @@ func (a *app) handleDomain(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
-	// Custom domains are a Premium perk ($10 lifetime). ensurePremium also
+	// Custom domains are a Founding Lifetime perk ($99 one-time). ensurePremium also
 	// catches a payment that settled since their last visit.
 	if !a.ensurePremium(&u) {
 		wish.Println(s, strings.Join([]string{
@@ -883,7 +889,7 @@ func (a *app) torMember(s ssh.Session, route string) (store.User, bool) {
 		return store.User{}, false
 	}
 	if !a.ensurePremium(&u) {
-		wish.Println(s, "  "+route+" is a Premium feature ($10 lifetime). Upgrade: ssh join@"+a.host)
+		wish.Println(s, "  "+route+" is a Founding Lifetime Member feature ($99 one-time, lifetime). Upgrade: ssh join@"+a.host)
 		_ = s.Exit(1)
 		return store.User{}, false
 	}

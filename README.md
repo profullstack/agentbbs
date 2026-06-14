@@ -13,9 +13,10 @@ Just two SSH front doors: **`join@`** to onboard a new key, then
 domains are all reached from there.
 
 **Membership:** a verified-email account is **free** — you get a personal Docker
-pod and a homepage at `https://bbs.profullstack.com/~name`. **Premium** ($10
-one-time, lifetime) adds a personal `name@bbs.profullstack.com` email (via
-forwardemail.net) and custom domains.
+pod and a homepage at `https://bbs.profullstack.com/~name`. **Founding Lifetime
+Member** ($99 one-time, first 1,000 accounts only) adds, for life: a personal
+`name@bbs.profullstack.com` email + webmail (via forwardemail.net), custom
+domains, and Tor access (`ssh tor@` — fetch URLs & join IRC over Tor).
 
 No browser, no install, no client download. The BBS is a hub of hot-swappable
 plugins around one shared account system; the full product plan is in
@@ -137,7 +138,7 @@ server. Full details: [`docs/irc.md`](docs/irc.md).
 - **Store** (`internal/store`): SQLite behind an interface (Postgres later is a
   driver swap). Users, sessions, scores, pod subscriptions.
 - **Payments** (`internal/payments`): CoinPay REST API (coinpayportal.com) for
-  the $10 lifetime membership + HMAC payment references; manual grant for ops.
+  the $99 Founding Lifetime membership + HMAC payment references; manual grant for ops.
 
 ## License
 
