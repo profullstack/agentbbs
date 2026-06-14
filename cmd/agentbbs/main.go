@@ -98,7 +98,7 @@ func main() {
 		return
 	}
 
-	host := env("AGENTBBS_HOST", "profullstack.com")
+	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
 	if fe.Domain == "" {
 		fe.Domain = host // personal addresses live on the BBS host by default

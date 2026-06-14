@@ -4,19 +4,19 @@
 by Profullstack, Inc.
 
 ```bash
-ssh bbs@profullstack.com          # the hub: arcade (DOOM, snake), leaderboards — guests welcome
-ssh join@profullstack.com         # register + confirm email by code, then the Premium offer
-ssh <name>@profullstack.com       # the hub as a member — or finger someone else's name
-ssh pod@profullstack.com          # your own Linux pod — FREE for verified members
-ssh domain@profullstack.com       # point your domain at your homepage (Premium)
-ssh video-<code>@profullstack.com # join a PairUX video call as truecolor ASCII
-ssh agent@profullstack.com        # chat with the operator's AI agent
+ssh bbs@bbs.profullstack.com          # the hub: arcade (DOOM, snake), leaderboards — guests welcome
+ssh join@bbs.profullstack.com         # register + confirm email by code, then the Premium offer
+ssh <name>@bbs.profullstack.com       # the hub as a member — or finger someone else's name
+ssh pod@bbs.profullstack.com          # your own Linux pod — FREE for verified members
+ssh domain@bbs.profullstack.com       # point your domain at your homepage (Premium)
+ssh video-<code>@bbs.profullstack.com # join a PairUX video call as truecolor ASCII
+ssh agent@bbs.profullstack.com        # chat with the operator's AI agent
 ```
 
 **Membership:** verified-email members are **free** — each gets a Docker pod
-(`ssh pod@`) and a homepage at `https://host/~name`. **Premium** ($10 one-time,
-lifetime) adds a personal `name@host` email (via forwardemail.net) and custom
-domains.
+(`ssh pod@`) and a homepage at `https://bbs.profullstack.com/~name`. **Premium**
+($10 one-time, lifetime) adds a personal `name@bbs.profullstack.com` email (via
+forwardemail.net) and custom domains.
 
 No browser, no install, no client download. The BBS is a hub of hot-swappable
 plugins around one shared account system; the full product plan is in
@@ -53,7 +53,7 @@ Configuration (env):
 | `AGENTBBS_ADDR` | `:2222` | listen address |
 | `AGENTBBS_DATA` | `./data` | SQLite db, host key, per-user dirs |
 | `AGENTBBS_ASSETS` | `./assets` | doom binary + wads |
-| `AGENTBBS_HOST` | `profullstack.com` | hostname shown in messages |
+| `AGENTBBS_HOST` | `bbs.profullstack.com` | hostname shown in messages |
 | `AGENTBBS_SANDBOX` | `auto` | `bwrap` / `prlimit` / `none` |
 | `AGENTBBS_POD_IMAGE` | `debian:stable-slim` | pod base image |
 | `AGENTBBS_POD_MEM` / `AGENTBBS_POD_CPUS` | `512m` / `1` | pod caps |
