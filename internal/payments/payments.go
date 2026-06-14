@@ -40,6 +40,24 @@ func PremiumAmount() string     { return envOr("AGENTBBS_PREMIUM_AMOUNT", "10") 
 func PremiumCurrency() string   { return envOr("AGENTBBS_PREMIUM_CURRENCY", "USD") }
 func PremiumBlockchain() string { return envOr("AGENTBBS_PREMIUM_BLOCKCHAIN", "eth") }
 
+// MerchantID is the CoinPay merchant/business id payments are created under
+// (AGENTBBS_COINPAY_MERCHANT_ID). When set it is passed as --business-id.
+func MerchantID() string { return os.Getenv("AGENTBBS_COINPAY_MERCHANT_ID") }
+
+// premiumCreateCmd builds the default `coinpay payment create` command, adding
+// --business-id when a merchant id is configured. extra is appended verbatim
+// (e.g. " --json --metadata %s"). The coinpay CLI reads COINPAY_API_KEY from
+// the environment for auth.
+func premiumCreateCmd(extra string) string {
+	cmd := "coinpay payment create --amount " + PremiumAmount() +
+		" --currency " + PremiumCurrency() +
+		" --blockchain " + PremiumBlockchain()
+	if m := MerchantID(); m != "" {
+		cmd += " --business-id " + m
+	}
+	return cmd + extra
+}
+
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -74,9 +92,7 @@ func PremiumReference(pubkeyFP string) string { return Reference("premium", pubk
 func CreatePremiumCharge(ref string) (Charge, bool, error) {
 	tmpl := os.Getenv("AGENTBBS_COINPAY_PREMIUM_CREATE_CMD")
 	if tmpl == "" {
-		tmpl = "coinpay payment create --amount " + PremiumAmount() +
-			" --currency " + PremiumCurrency() +
-			" --blockchain " + PremiumBlockchain() + " --json --metadata %s"
+		tmpl = premiumCreateCmd(" --json --metadata %s")
 	}
 	line := tmpl
 	if strings.Contains(tmpl, "%s") {
@@ -120,9 +136,7 @@ func CreatePremiumCharge(ref string) (Charge, bool, error) {
 func PremiumPayCommand(ref string) string {
 	tmpl := os.Getenv("AGENTBBS_COINPAY_PREMIUM_PAY_TMPL")
 	if tmpl == "" {
-		tmpl = "coinpay payment create --amount " + PremiumAmount() +
-			" --currency " + PremiumCurrency() +
-			" --blockchain " + PremiumBlockchain() + " --metadata %s"
+		tmpl = premiumCreateCmd(" --metadata %s")
 	}
 	if strings.Contains(tmpl, "%s") {
 		return fmt.Sprintf(tmpl, ref)

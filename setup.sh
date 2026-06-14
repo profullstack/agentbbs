@@ -188,7 +188,11 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 
 # Premium payment via the coinpay CLI: join@ mints a charge and shows the amount
 # + deposit address; the status command verifies a later settlement. %s is the
-# per-account payment reference.
+# per-account payment reference. COINPAY_API_KEY + the merchant id are injected
+# by the CI deploy from GitHub secrets (COINPAY_API_KEY / COINPAY_MERCHANT_ID);
+# set them here directly when provisioning by hand:
+# COINPAY_API_KEY=cp_live_xxx
+# AGENTBBS_COINPAY_MERCHANT_ID=<merchant/business uuid>   # -> --business-id
 # AGENTBBS_PREMIUM_AMOUNT=10
 # AGENTBBS_PREMIUM_CURRENCY=USD
 # AGENTBBS_PREMIUM_BLOCKCHAIN=eth
@@ -212,6 +216,26 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 ENV
   chmod 0640 "$ENV_DIR/agentbbs.env"
 fi
+
+# Idempotently upsert secrets passed in the environment (e.g. by the CI deploy
+# from GitHub Actions secrets) into agentbbs.env, preserving everything else.
+# Secrets are never committed — they live only here and in encrypted CI storage.
+upsert_env() {  # KEY VALUE — skips when VALUE is empty
+  local key="$1" val="$2" file="$ENV_DIR/agentbbs.env"
+  [ -n "$val" ] || return 0
+  touch "$file"
+  if grep -qE "^${key}=" "$file"; then
+    # Replace in place (| delimiter avoids clashes with / or & in the value).
+    sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+  chmod 0640 "$file"
+}
+# CoinPay: API key (read by the coinpay CLI) + merchant/business id.
+upsert_env COINPAY_API_KEY "${COINPAY_API_KEY:-}"
+upsert_env AGENTBBS_COINPAY_MERCHANT_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
+upsert_env COINPAY_BUSINESS_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
 
 # ---- 7. systemd unit (runs as $SVC_USER, binds :22 via ambient capability) --
 log "installing agentbbs.service"
