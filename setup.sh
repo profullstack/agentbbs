@@ -38,6 +38,10 @@ SKIP_BUILD="${SKIP_BUILD:-0}"       # set 1 to use prebuilt /usr/local/bin/{agen
 SWAP_SIZE="${SWAP_SIZE:-3G}"        # swapfile size added on low-RAM hosts (set 0 to skip)
 SELF_UPDATE="${SELF_UPDATE:-1}"     # set 0 to skip the autonomous self-update systemd timer
 SELF_UPDATE_INTERVAL="${SELF_UPDATE_INTERVAL:-15min}"  # how often the box polls origin for new commits
+IRC="${IRC:-1}"                     # set 0 to skip the co-located Ergo IRC server (irc.${DOMAIN})
+ERGO_VERSION="${ERGO_VERSION:-2.18.0}"  # Ergo IRCd release to install
+IRC_NETWORK="${IRC_NETWORK:-ProfullstackBBS}"  # IRC network name shown to clients
+ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -85,7 +89,7 @@ log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-  git ca-certificates curl ufw ffmpeg unzip \
+  git ca-certificates curl ufw ffmpeg unzip jq \
   podman uidmap slirp4netns fuse-overlayfs \
   tor torsocks \
   debian-keyring debian-archive-keyring apt-transport-https >/dev/null
@@ -428,6 +432,14 @@ ${DOMAIN} {
 		reverse_proxy http://${HTTP_ADDR}
 	}
 
+	# IRC over WebSocket: Caddy terminates TLS and proxies to Ergo's loopback
+	# WebSocket listener, so web clients hit wss://${DOMAIN}/irc and agents get a
+	# WebSocket transport without exposing another public port. (No-op if IRC=0;
+	# Ergo just isn't listening on 8097, so /irc returns 502.)
+	handle /irc {
+		reverse_proxy 127.0.0.1:8097
+	}
+
 	# tilde.town-style homepages: /~name[/path] -> users/name/public_html/path
 	@tilde path_regexp tilde ^/~([^/]+)(/.*)?\$
 	handle @tilde {
@@ -477,6 +489,135 @@ ufw allow 80/tcp  >/dev/null
 ufw allow 443/tcp >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
+# ---- 9b. Ergo IRC server (co-located irc.${DOMAIN}; humans + agents) --------
+# A lightweight single-binary IRC network on its own ports, sharing this box and
+# this hostname's TLS cert. Native clients hit irc.${DOMAIN}:6697 (TLS); web
+# clients and agents hit wss://${DOMAIN}/irc (Caddy fronts Ergo's loopback
+# WebSocket). See docs/irc.md. Disable with IRC=0.
+if [ "$IRC" = "1" ]; then
+  log "installing Ergo IRC server v${ERGO_VERSION} (irc.${DOMAIN})"
+  case "$GOARCH" in
+    amd64) ERGO_ARCH=x86_64 ;;
+    arm64) ERGO_ARCH=arm64 ;;
+    *)     ERGO_ARCH="$GOARCH" ;;
+  esac
+  id ergo >/dev/null 2>&1 || useradd --system --home-dir "$ERGO_DATA" --shell /usr/sbin/nologin ergo
+  install -d -m 0755 /opt/ergo "$ERGO_DATA" "$ERGO_DATA/tls" /etc/ergo
+
+  # Install/upgrade the binary + bundled languages (idempotent: only on version change).
+  if [ "$(/opt/ergo/ergo --version 2>/dev/null)" != "ergo-${ERGO_VERSION}" ]; then
+    tmp="$(mktemp -d)"
+    curl -fsSL "https://github.com/ergochat/ergo/releases/download/v${ERGO_VERSION}/ergo-${ERGO_VERSION}-linux-${ERGO_ARCH}.tar.gz" -o "$tmp/ergo.tgz" \
+      || die "could not download Ergo ${ERGO_VERSION}"
+    tar -C "$tmp" -xzf "$tmp/ergo.tgz"
+    d="$tmp/ergo-${ERGO_VERSION}-linux-${ERGO_ARCH}"
+    install -m 0755 "$d/ergo" /opt/ergo/ergo
+    rm -rf /opt/ergo/languages && cp -r "$d/languages" /opt/ergo/languages
+    rm -rf "$tmp"
+  fi
+
+  # Operator password: generate once, keep the plaintext root-only, embed only the hash.
+  if [ ! -f "$ENV_DIR/ergo-oper.txt" ]; then
+    OPER_PASS="$(head -c18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c24)"
+    printf '%s\n' "$OPER_PASS" > "$ENV_DIR/ergo-oper.txt"
+    chmod 600 "$ENV_DIR/ergo-oper.txt"
+  fi
+  OPER_PASS="$(cat "$ENV_DIR/ergo-oper.txt")"
+  OPER_HASH="$(printf '%s\n%s\n' "$OPER_PASS" "$OPER_PASS" | /opt/ergo/ergo genpasswd 2>/dev/null | tail -1)"
+
+  # Render the config template from the repo (the __TOKENS__ become real values).
+  sed -e "s|__NETWORK__|${IRC_NETWORK}|g" \
+      -e "s|__DOMAIN__|${DOMAIN}|g" \
+      -e "s|__DATA__|${ERGO_DATA}|g" \
+      -e "s|__TLS_DIR__|${ERGO_DATA}/tls|g" \
+      -e "s|__LANG_DIR__|/opt/ergo/languages|g" \
+      -e "s|__OPER_PASSWORD_HASH__|${OPER_HASH}|g" \
+      -e "s|__USERS_DIR__|${DATA_DIR}/users|g" \
+      "${SRC_DIR}/deploy/ergo/ircd.yaml" > /etc/ergo/ircd.yaml
+  chmod 640 /etc/ergo/ircd.yaml
+
+  # IRC is members-only: this auth-script approves a SASL login only if the
+  # account name maps to an AgentBBS member home dir under ${DATA_DIR}/users.
+  install -m 0755 "${SRC_DIR}/deploy/ergo/auth-script.sh" /usr/local/bin/ergo-auth-member
+
+  # TLS for 6697: reuse Caddy's Let's Encrypt cert for ${DOMAIN}; self-signed
+  # fallback on first run before Caddy has issued it (the timer swaps it in).
+  install -m 0755 "${SRC_DIR}/deploy/ergo/refresh-certs.sh" /usr/local/bin/ergo-refresh-certs
+  DOMAIN="$DOMAIN" ERGO_DATA="$ERGO_DATA" /usr/local/bin/ergo-refresh-certs || true
+  if [ ! -s "$ERGO_DATA/tls/fullchain.pem" ]; then
+    warn "no Caddy cert for ${DOMAIN} yet — using a self-signed cert on 6697 until the ergo-certs timer swaps in the real one"
+    ( cd /etc/ergo && /opt/ergo/ergo mkcerts --conf /etc/ergo/ircd.yaml --quiet 2>/dev/null ) \
+      || openssl req -newkey rsa:2048 -nodes -days 90 -x509 \
+           -keyout "$ERGO_DATA/tls/privkey.pem" -out "$ERGO_DATA/tls/fullchain.pem" \
+           -subj "/CN=irc.${DOMAIN}" 2>/dev/null
+  fi
+  chown -R ergo:ergo "$ERGO_DATA" /etc/ergo
+
+  # Initialize the datastore once.
+  [ -f "$ERGO_DATA/ircd.db" ] || sudo -u ergo /opt/ergo/ergo initdb --conf /etc/ergo/ircd.yaml --quiet
+
+  log "installing ergo.service"
+  cat > /etc/systemd/system/ergo.service <<UNIT
+[Unit]
+Description=Ergo IRC server (AgentBBS — irc.${DOMAIN})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ergo
+Group=ergo
+WorkingDirectory=/opt/ergo
+ExecStart=/opt/ergo/ergo run --conf /etc/ergo/ircd.yaml
+# Ergo rehashes config + reloads TLS certs on SIGHUP.
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=${ERGO_DATA} /etc/ergo
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # Daily cert refresh from Caddy (tracks auto-renewals).
+  cat > /etc/systemd/system/ergo-certs.service <<UNIT
+[Unit]
+Description=Refresh Ergo TLS cert from Caddy for ${DOMAIN}
+
+[Service]
+Type=oneshot
+Environment=DOMAIN=${DOMAIN}
+Environment=ERGO_DATA=${ERGO_DATA}
+ExecStart=/usr/local/bin/ergo-refresh-certs
+UNIT
+  cat > /etc/systemd/system/ergo-certs.timer <<UNIT
+[Unit]
+Description=Periodic Ergo TLS cert refresh from Caddy
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable ergo >/dev/null 2>&1 || true
+  systemctl restart ergo
+  systemctl enable --now ergo-certs.timer >/dev/null 2>&1 || true
+  ufw allow 6697/tcp >/dev/null
+  sleep 1
+  systemctl is-active --quiet ergo \
+    || warn "ergo failed to start — check: journalctl -u ergo -n50"
+else
+  systemctl disable --now ergo ergo-certs.timer >/dev/null 2>&1 || true
+fi
+
 # ---- 10. firewall + start agentbbs on :22 ----------------------------------
 log "configuring firewall + starting agentbbs"
 ufw allow 22/tcp >/dev/null
@@ -503,9 +644,12 @@ cat <<DONE
   Web        https://${DOMAIN}/             site root
              https://${DOMAIN}/~<name>      a member's homepage
              https://<your-domain>          a member's homepage on a custom domain (auto-HTTPS)
+  IRC        irc.${DOMAIN}:6697 (TLS)       native clients   ${IRC:+(set IRC=0 to disable)}
+             wss://${DOMAIN}/irc            web clients + agents over WebSocket
+             /OPER admin <pw>               oper password in ${ENV_DIR}/ergo-oper.txt
 
   Config     ${ENV_DIR}/agentbbs.env   (set CoinPay + LiveKit, then: systemctl restart agentbbs)
-  Logs       journalctl -u agentbbs -f
+  Logs       journalctl -u agentbbs -f          (IRC: journalctl -u ergo -f)
   Update     re-run this script (git pull + rebuild + restart)
 DONE
 warn "Before you log out: open a new terminal and confirm  ssh -p ${ADMIN_SSH_PORT} <you>@${DOMAIN}  works."
