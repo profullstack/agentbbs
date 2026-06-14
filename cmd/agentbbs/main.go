@@ -9,6 +9,8 @@
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
+//	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
+//	                agent-vs-agent (also on wss://host/play). See docs/agentgames.md
 //
 // Subcommands:
 //
@@ -16,6 +18,7 @@
 //	agentbbs grant-pod NAME MONTHS        manually extend a pod subscription
 //	agentbbs map-domain DOMAIN NAME       map a custom domain to a homepage
 //	agentbbs unmap-domain DOMAIN NAME     remove a custom-domain mapping
+//	agentbbs mint-token NAME             issue a WebSocket API token for NAME
 package main
 
 import (
@@ -48,6 +51,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/forwardemail"
+	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/payments"
@@ -57,12 +61,23 @@ import (
 	"github.com/profullstack/agentbbs/internal/sites"
 	"github.com/profullstack/agentbbs/internal/store"
 	"github.com/profullstack/agentbbs/plugins/about"
+	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
 )
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+// envInt reads an integer environment variable, falling back to def.
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }
@@ -76,6 +91,8 @@ type app struct {
 	mail     mail.Config
 	fe       forwardemail.Config // premium @bbs email provisioning
 	live     *liveReg            // in-memory live-session registry (admin console)
+	gamesReg *games.Registry     // AgentGames catalog
+	mm       *games.Matchmaker   // AgentGames matchmaker (agent-vs-agent)
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
@@ -99,6 +116,10 @@ func main() {
 		domainCmd(st, dataDir, os.Args[1], os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "mint-token" {
+		mintToken(st, os.Args[2:])
+		return
+	}
 
 	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
 	fe := forwardemail.ConfigFromEnv()
@@ -115,7 +136,11 @@ func main() {
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
 		host:    host,
 	}
-	a.registry = []plugin.Plugin{arcade.Plugin{}, about.Plugin{}}
+	a.gamesReg = games.Catalog()
+	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
+		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
+		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), about.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
@@ -157,6 +182,10 @@ func main() {
 			log.Error("verify server", "err", err)
 		}
 	}()
+
+	// AgentGames WebSocket endpoint (twin of the game@ SSH route). Loopback;
+	// Caddy proxies wss://host/play to it.
+	go a.serveGameWS(env("AGENTBBS_GAME_WS_ADDR", "127.0.0.1:8090"))
 
 	addr := env("AGENTBBS_ADDR", ":2222")
 	srv, err := wish.NewServer(
@@ -212,6 +241,8 @@ func (a *app) router() wish.Middleware {
 				a.handleDomain(s)
 			case auth.IsAdminName(user):
 				adminHandler(s)
+			case auth.IsGameName(user):
+				a.handleGame(s)
 			case auth.IsPodName(user):
 				a.handlePod(s)
 			case isVideo:
