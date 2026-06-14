@@ -1,0 +1,87 @@
+name: deploy
+
+# Fully autonomous, idempotent deploy. On every push to main (or manual
+# dispatch) this SSHes to the bbs.profullstack.com droplet and re-runs the
+# idempotent provisioner (setup.sh), which pulls origin, rebuilds the Go
+# binaries, and restarts the agentbbs service that answers
+# `ssh join@bbs.profullstack.com`. Re-running is always safe.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   DEPLOY_SSH_KEY   private key whose public half is in the droplet admin
+#                    user's ~/.ssh/authorized_keys
+#   DEPLOY_HOST      bbs.profullstack.com  (or the droplet's public IP)
+# Optional (have sensible defaults below):
+#   DEPLOY_USER      admin SSH user (default: root)
+#   DEPLOY_PORT      admin SSH port  (default: 2202 — setup.sh moves OpenSSH here)
+#
+# The admin user needs passwordless sudo (root already does).
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Never let two deploys overlap; setup.sh also self-locks, this is belt+braces.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "::error::DEPLOY_SSH_KEY secret is not set"; exit 1; }
+          test -n "$DEPLOY_HOST"    || { echo "::error::DEPLOY_HOST secret is not set"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Provision / redeploy (idempotent)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+          # Deploy whichever branch was pushed (main or master), so a rename
+          # "just works". For workflow_dispatch this is the chosen branch.
+          DEPLOY_BRANCH: ${{ github.ref_name }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
+              -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "sudo -n env BRANCH=$(printf %q "$DEPLOY_BRANCH") bash -s" <<'REMOTE'
+          set -euo pipefail
+          REPO=https://github.com/profullstack/agentbbs.git
+          BRANCH="${BRANCH:-main}"
+          SRC=/opt/agentbbs
+          # Bootstrap on a fresh box, then always sync to origin so we run the
+          # latest setup.sh (it may have changed in this very push).
+          if [ ! -d "$SRC/.git" ]; then
+            git clone --depth 1 -b "$BRANCH" "$REPO" "$SRC"
+          fi
+          git -C "$SRC" fetch --depth 1 origin "$BRANCH"
+          git -C "$SRC" reset --hard "origin/$BRANCH"
+          exec env BRANCH="$BRANCH" "$SRC/setup.sh"
+          REMOTE
+
+      - name: Smoke-test that agentbbs serves :22
+        if: success()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # Confirm an SSH server answers on :22 WITHOUT authenticating — a real
+          # join@ connection would register the connecting key as a new account,
+          # so we never complete a handshake here. Admin OpenSSH lives on the
+          # admin port, so anything serving :22 is agentbbs answering join@/bbs@.
+          if timeout 15 ssh-keyscan -T 10 -p 22 "$DEPLOY_HOST" 2>/dev/null | grep -q .; then
+            echo "::notice::agentbbs is serving SSH on ${DEPLOY_HOST}:22 (join@ is reachable)"
+          else
+            echo "::error::nothing is serving SSH on ${DEPLOY_HOST}:22 — agentbbs may be down"
+            exit 1
+          fi

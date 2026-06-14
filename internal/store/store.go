@@ -18,22 +18,24 @@ type User struct {
 	PubKeyFP      string
 	Email         string
 	EmailVerified bool
+	Premium       bool // paid the one-time lifetime membership
 	CreatedAt     time.Time
 }
 
 // userCols is the column list (in struct order) for every user SELECT, kept in
 // sync with scanUser.
-const userCols = `id, name, kind, pubkey_fp, email, email_verified, created_at`
+const userCols = `id, name, kind, pubkey_fp, email, email_verified, premium, created_at`
 
 // scanUser reads one user row selected with userCols.
 func scanUser(sc interface{ Scan(...any) error }) (User, error) {
 	var u User
-	var verified int
+	var verified, premium int
 	var created string
-	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &created); err != nil {
+	if err := sc.Scan(&u.ID, &u.Name, &u.Kind, &u.PubKeyFP, &u.Email, &verified, &premium, &created); err != nil {
 		return User{}, err
 	}
 	u.EmailVerified = verified != 0
+	u.Premium = premium != 0
 	u.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return u, nil
 }
@@ -60,11 +62,21 @@ type Store interface {
 	LastSeen(userID int64) (time.Time, bool, error)
 
 	// SetEmailVerification records the account's email and a fresh
-	// confirmation token, marking it unverified until the token is used.
+	// confirmation token (a link token or a short code), marking it unverified
+	// until the token is consumed.
 	SetEmailVerification(userID int64, email, token string) error
 	// VerifyEmail consumes a confirmation token: on match it marks the
 	// account verified, clears the token, and returns the account.
 	VerifyEmail(token string) (User, bool, error)
+	// ConfirmEmailCode is the interactive (join@) counterpart to VerifyEmail:
+	// it matches the code against the one stored for THIS user (codes are
+	// short and not globally unique), and on match marks the account verified
+	// and clears the code. Returns ok=false on a wrong/empty code.
+	ConfirmEmailCode(userID int64, code string) (User, bool, error)
+
+	// GrantPremium marks the account as a lifetime premium member (the $10
+	// one-time membership), recording the CoinPay payment reference. Idempotent.
+	GrantPremium(userID int64, paymentRef string) error
 
 	RecordSession(userID int64, username, remote, route string) (int64, error)
 	EndSession(sessionID int64) error
@@ -140,6 +152,8 @@ func migrate(db *sql.DB) error {
 		{"email", "email TEXT NOT NULL DEFAULT ''"},
 		{"email_verified", "email_verified INTEGER NOT NULL DEFAULT 0"},
 		{"verify_token", "verify_token TEXT NOT NULL DEFAULT ''"},
+		{"premium", "premium INTEGER NOT NULL DEFAULT 0"},
+		{"premium_ref", "premium_ref TEXT NOT NULL DEFAULT ''"},
 	})
 }
 
@@ -277,6 +291,30 @@ func (s *sqliteStore) VerifyEmail(token string) (User, bool, error) {
 	}
 	u.EmailVerified = true
 	return u, true, nil
+}
+
+func (s *sqliteStore) ConfirmEmailCode(userID int64, code string) (User, bool, error) {
+	if code == "" {
+		return User{}, false, nil
+	}
+	u, err := scanUser(s.db.QueryRow(
+		`SELECT `+userCols+` FROM users WHERE id = ? AND verify_token = ?`, userID, code))
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	if _, err := s.db.Exec(`UPDATE users SET email_verified = 1, verify_token = '' WHERE id = ?`, u.ID); err != nil {
+		return User{}, false, err
+	}
+	u.EmailVerified = true
+	return u, true, nil
+}
+
+func (s *sqliteStore) GrantPremium(userID int64, paymentRef string) error {
+	_, err := s.db.Exec(`UPDATE users SET premium = 1, premium_ref = ? WHERE id = ?`, paymentRef, userID)
+	return err
 }
 
 func (s *sqliteStore) RecordSession(userID int64, username, remote, route string) (int64, error) {

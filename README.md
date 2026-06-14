@@ -5,12 +5,18 @@ by Profullstack, Inc.
 
 ```bash
 ssh bbs@profullstack.com          # the hub: arcade (DOOM, snake), leaderboards — guests welcome
-ssh join@profullstack.com         # register your SSH key (prints instructions, disconnects)
+ssh join@profullstack.com         # register + confirm email by code, then the Premium offer
 ssh <name>@profullstack.com       # the hub as a member — or finger someone else's name
-ssh pod@profullstack.com          # your own Linux pod — members, $1/mo via CoinPay
+ssh pod@profullstack.com          # your own Linux pod — FREE for verified members
+ssh domain@profullstack.com       # point your domain at your homepage (Premium)
 ssh video-<code>@profullstack.com # join a PairUX video call as truecolor ASCII
 ssh agent@profullstack.com        # chat with the operator's AI agent
 ```
+
+**Membership:** verified-email members are **free** — each gets a Docker pod
+(`ssh pod@`) and a homepage at `https://host/~name`. **Premium** ($10 one-time,
+lifetime) adds a personal `name@host` email (via forwardemail.net) and custom
+domains.
 
 No browser, no install, no client download. The BBS is a hub of hot-swappable
 plugins around one shared account system; the full product plan is in
@@ -60,6 +66,19 @@ Ops:
 ```bash
 ./agentbbs grant-pod alice 12    # manual pod grant (12 months)
 ```
+
+## Deploy
+
+The production host (`bbs.profullstack.com`) is provisioned by the idempotent
+[`setup.sh`](setup.sh) and stays current automatically:
+
+- **Every push to `main`** runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
+  which SSHes to the droplet and re-runs `setup.sh` (pull + rebuild + restart).
+- A **self-update systemd timer** (`scripts/self-update.sh`, installed by
+  `setup.sh`) polls origin every 15 min and redeploys only when it advances, so
+  the box self-heals even if CI is down.
+
+Full details, required secrets, and ops commands: [`docs/deploy.md`](docs/deploy.md).
 
 ## Architecture
 
