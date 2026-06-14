@@ -28,6 +28,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -53,6 +54,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
+	"github.com/profullstack/agentbbs/internal/irc"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -253,6 +255,8 @@ func (a *app) router() wish.Middleware {
 				a.handleTorIRC(s)
 			case auth.IsTorName(user):
 				a.handleTorCmd(s)
+			case auth.IsIRCName(user):
+				a.handleIRC(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -318,6 +322,41 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		seedHomepage(filepath.Join(ctx.DataDir, "public_html"), u.Name, a.host)
 	}
 	return hub.New(u, ctx, a.enabledPlugins()), []tea.ProgramOption{tea.WithAltScreen()}
+}
+
+// readLine reads one line of interactive input from an SSH session that is
+// running under a client-allocated PTY. That detail is the whole reason this
+// helper exists: when the client requests a PTY (which `ssh join@host` does by
+// default) it puts its OWN terminal into raw mode, so it sends raw keystrokes —
+// Enter arrives as '\r', not '\n' — and does NO local echo. bufio.ReadString
+// ('\n') therefore blocks forever (the '\n' never comes) and the user sees a
+// dead prompt. So we read byte-by-byte, accept either '\r' or '\n' as the line
+// terminator, handle backspace, and echo printable bytes back ourselves.
+func readLine(s ssh.Session, in *bufio.Reader) (string, error) {
+	var b []byte
+	for {
+		c, err := in.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch c {
+		case '\r', '\n':
+			wish.Print(s, "\r\n")
+			return string(b), nil
+		case 0x03, 0x04: // Ctrl-C / Ctrl-D: treat as abort
+			return "", io.EOF
+		case 0x7f, '\b': // DEL / backspace: erase last char on screen too
+			if len(b) > 0 {
+				b = b[:len(b)-1]
+				wish.Print(s, "\b \b")
+			}
+		default:
+			if c >= 0x20 { // printable byte; ignore other control codes
+				b = append(b, c)
+				wish.Print(s, string(c))
+			}
+		}
+	}
 }
 
 // handleJoin runs onboarding interactively in one SSH session: register the
@@ -398,7 +437,7 @@ func (a *app) registerNewMember(s ssh.Session, in *bufio.Reader, fp string) (sto
 
 	for tries := 0; tries < 5; tries++ {
 		wish.Print(s, "\n  Username ["+def+"]: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return store.User{}, err
 		}
@@ -433,7 +472,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 	var email string
 	for tries := 0; tries < 3; tries++ {
 		wish.Print(s, "\n  Email: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return false
 		}
@@ -472,7 +511,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 
 	for tries := 0; tries < 3; tries++ {
 		wish.Print(s, "  Enter the code: ")
-		line, err := in.ReadString('\n')
+		line, err := readLine(s, in)
 		if err != nil {
 			return false
 		}
@@ -888,6 +927,48 @@ func (a *app) handleTorIRC(s ssh.Session) {
 	if err := a.pods.Exec(s, u.Name, tor.IRCArgv(args[0])); err != nil {
 		wish.Println(s, "tor-irc error: "+err.Error())
 		_ = s.Exit(1)
+	}
+}
+
+// handleIRC drops a member into the BBS's own (members-only) IRC network using
+// an in-process client: it authenticates to Ergo over SASL as the member and
+// runs a Bubble Tea TUI. Free for any registered member; needs a PTY. Distinct
+// from tor-irc@ (a client for remote servers over Tor).
+func (a *app) handleIRC(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "irc@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "the IRC network is members-only — register first: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "irc")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	addr := strings.TrimSpace(os.Getenv("AGENTBBS_IRC_ADDR"))
+	if addr == "" {
+		addr = irc.DefaultAddr
+	}
+	log.Info("irc connect", "user", u.Name, "addr", addr)
+	c, err := irc.Dial(s.Context(), addr, u.Name)
+	if err != nil {
+		wish.Println(s, "irc: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_ = c.Join(irc.DefaultChannel)
+	if err := irc.Run(s, c); err != nil {
+		wish.Println(s, "irc: "+err.Error())
 	}
 }
 
