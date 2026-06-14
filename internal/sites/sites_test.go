@@ -110,3 +110,39 @@ func TestManagerAddRemoveSyncAsk(t *testing.T) {
 		t.Error("expected domain unmapped in store")
 	}
 }
+
+func TestAskUserSubdomain(t *testing.T) {
+	t.Setenv("AGENTBBS_HOST", "bbs.profullstack.com")
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.EnsureUser("alice", "member", "SHA256:aaa"); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := NewManager(st, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := m.AskHandler()
+
+	for _, c := range []struct {
+		domain string
+		code   int
+	}{
+		{"alice.bbs.profullstack.com", http.StatusOK},        // registered member → cert allowed
+		{"nobody.bbs.profullstack.com", http.StatusNotFound}, // no such user
+		{"a.b.bbs.profullstack.com", http.StatusNotFound},    // multi-label, not a user subdomain
+		{"bbs.profullstack.com", http.StatusNotFound},        // apex is not a user subdomain
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/check?domain="+c.domain, nil)
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.code {
+			t.Errorf("ask %q = %d, want %d", c.domain, rec.Code, c.code)
+		}
+	}
+}

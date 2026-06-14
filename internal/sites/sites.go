@@ -48,6 +48,7 @@ type Manager struct {
 	st       store.Store
 	usersDir string // <data>/users
 	domDir   string // <data>/domains  (the symlink farm Caddy serves)
+	baseHost string // AGENTBBS_HOST, e.g. bbs.profullstack.com (for <name>.<host>)
 }
 
 // NewManager prepares the symlink farm under dataDir/domains.
@@ -60,6 +61,7 @@ func NewManager(st store.Store, dataDir string) (*Manager, error) {
 		st:       st,
 		usersDir: filepath.Join(dataDir, "users"),
 		domDir:   domDir,
+		baseHost: strings.ToLower(strings.TrimSpace(os.Getenv("AGENTBBS_HOST"))),
 	}, nil
 }
 
@@ -131,6 +133,20 @@ func (m *Manager) AskHandler() http.Handler {
 		if d == "" || !Valid(d) {
 			http.Error(w, "bad domain", http.StatusBadRequest)
 			return
+		}
+		// Free user-homepage subdomain: <name>.<baseHost> for any registered
+		// member (e.g. alice.bbs.profullstack.com). Single label only.
+		if m.baseHost != "" && strings.HasSuffix(d, "."+m.baseHost) {
+			label := strings.TrimSuffix(d, "."+m.baseHost)
+			if label != "" && !strings.Contains(label, ".") {
+				if _, ok, err := m.st.UserByName(label); err != nil {
+					http.Error(w, "lookup error", http.StatusInternalServerError)
+					return
+				} else if ok {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+			}
 		}
 		if _, ok, err := m.st.DomainUser(d); err != nil {
 			http.Error(w, "lookup error", http.StatusInternalServerError)

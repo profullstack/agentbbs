@@ -381,6 +381,7 @@ fi
 # Let Caddy (user 'caddy') read the per-user public_html trees.
 usermod -aG "$SVC_USER" caddy 2>/dev/null || true
 log "writing Caddyfile"
+DOMAIN_RE=$(printf '%s' "$DOMAIN" | sed 's/[.]/\\./g')   # dots escaped for Caddy host_regexp
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -414,6 +415,26 @@ ${DOMAIN} {
 	handle {
 		root * ${DATA_DIR}/web
 		file_server
+	}
+}
+
+# Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
+# *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
+# ask endpoint confirms <name> is a registered member, so random subdomains
+# can't trigger certificate issuance.
+*.${DOMAIN} {
+	encode zstd gzip
+	tls {
+		on_demand
+	}
+	@user host_regexp user ^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.${DOMAIN_RE}\$
+	handle @user {
+		root * ${DATA_DIR}/users/{re.user.1}/public_html
+		try_files {path} {path}/index.html
+		file_server browse
+	}
+	handle {
+		respond "no such user" 404
 	}
 }
 
