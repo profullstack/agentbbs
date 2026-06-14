@@ -108,7 +108,15 @@ type app struct {
 	newsAddr string // loopback NNTP address the news@ reader dials
 }
 
+// Version is the agentbbs stack release, surfaced via `agentbbs version` and
+// logged at startup. Bump on each release of the bbs.profullstack.com stack.
+const Version = "v0.1.0"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("agentbbs " + Version)
+		return
+	}
 	dataDir := env("AGENTBBS_DATA", "./data")
 	_ = os.MkdirAll(filepath.Join(dataDir, "users"), 0o755)
 
@@ -258,7 +266,7 @@ func main() {
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Info("agentbbs listening", "addr", addr)
+	log.Info("agentbbs listening", "addr", addr, "version", Version)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 			log.Error("serve", "err", err)
