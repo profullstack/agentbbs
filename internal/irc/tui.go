@@ -24,18 +24,20 @@ var (
 )
 
 // Run drives the IRC TUI over the SSH session until the member leaves; leaving
-// ends the session (irc@ is a dedicated route, like agent@).
-func Run(s ssh.Session, c *Client) error {
+// ends the session (irc@ is a dedicated route, like agent@). canCreate gates the
+// /create command on premium membership.
+func Run(s ssh.Session, c *Client, canCreate bool) error {
 	ptyReq, winCh, hasPty := s.Pty()
 	if !hasPty {
 		_, _ = s.Write([]byte("irc needs a terminal (ssh -t irc@<host>)\r\n"))
 		return nil
 	}
 	m := &model{
-		c:       c,
-		channel: DefaultChannel,
-		width:   ptyReq.Window.Width,
-		height:  ptyReq.Window.Height,
+		c:         c,
+		channel:   DefaultChannel,
+		canCreate: canCreate,
+		width:     ptyReq.Window.Width,
+		height:    ptyReq.Window.Height,
 	}
 	m.lines = append(m.lines,
 		cSys.Render(fmt.Sprintf("connected as %s — joined %s. /help for commands, esc to leave.", c.Nick(), DefaultChannel)))
@@ -62,10 +64,11 @@ func waitEvent(c *Client) tea.Cmd {
 }
 
 type model struct {
-	c       *Client
-	channel string // current conversation target for typed lines
-	lines   []string
-	input   string
+	c         *Client
+	channel   string // current conversation target for typed lines
+	canCreate bool   // premium members may /create (register) new channels
+	lines     []string
+	input     string
 
 	width, height int
 }
@@ -159,7 +162,27 @@ func (m *model) command(text string) tea.Cmd {
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 	switch cmd {
 	case "/help":
-		m.push(cSys.Render("commands: /join #chan  /part [#chan]  /msg <nick> <text>  /me <action>  /names  /nick <name>  /quit"))
+		m.push(cSys.Render("commands: /join #chan  /part [#chan]  /create #chan  /msg <nick> <text>  /me <action>  /names  /nick <name>  /quit"))
+	case "/create":
+		if !m.canCreate {
+			m.push(cErr.Render("creating channels is a Founding Lifetime Member perk — upgrade with: ssh join@ (the BBS). You can still /join existing channels."))
+			break
+		}
+		ch := arg
+		if ch == "" {
+			m.push(cErr.Render("usage: /create #channel"))
+			break
+		}
+		if !strings.HasPrefix(ch, "#") {
+			ch = "#" + ch
+		}
+		// operator-only-creation is off, so joining a fresh channel creates it and
+		// ops the creator; registering it with ChanServ makes it persist with you
+		// as founder. (Both run in order on this connection.)
+		_ = m.c.Join(ch)
+		_ = m.c.Privmsg("ChanServ", "REGISTER "+ch)
+		m.channel = ch
+		m.push(cSys.Render("created " + ch + " — you're the founder. Share the name so members can /join it."))
 	case "/join":
 		if arg == "" {
 			m.push(cErr.Render("usage: /join #channel"))

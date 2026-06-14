@@ -38,7 +38,8 @@ SKIP_BUILD="${SKIP_BUILD:-0}"       # set 1 to use prebuilt /usr/local/bin/{agen
 SWAP_SIZE="${SWAP_SIZE:-3G}"        # swapfile size added on low-RAM hosts (set 0 to skip)
 SELF_UPDATE="${SELF_UPDATE:-1}"     # set 0 to skip the autonomous self-update systemd timer
 SELF_UPDATE_INTERVAL="${SELF_UPDATE_INTERVAL:-15min}"  # how often the box polls origin for new commits
-IRC="${IRC:-1}"                     # set 0 to skip the co-located Ergo IRC server (irc.${DOMAIN})
+IRC="${IRC:-1}"                     # set 0 to skip the co-located Ergo IRC server (${IRC_DOMAIN})
+IRC_DOMAIN="${IRC_DOMAIN:-irc.${DOMAIN#*.}}"  # IRC host (default: irc.<root-of-DOMAIN>, e.g. irc.profullstack.com)
 NEWS="${NEWS:-1}"                   # set 0 to skip the co-located Usenet/NNTP server (news.${DOMAIN})
 ERGO_VERSION="${ERGO_VERSION:-2.18.0}"  # Ergo IRCd release to install
 IRC_NETWORK="${IRC_NETWORK:-ProfullstackBBS}"  # IRC network name shown to clients
@@ -481,6 +482,26 @@ news.${DOMAIN} {
 "
 fi
 
+# IRC site (${IRC_DOMAIN}). Caddy serving this host means it obtains a Let's
+# Encrypt cert for it — which ergo-refresh-certs copies into Ergo for 6697 TLS.
+# It also fronts the same loopback WebSocket, so wss://${IRC_DOMAIN}/irc works
+# (alongside wss://${DOMAIN}/irc). Needs an A record ${IRC_DOMAIN} -> this host.
+IRC_SITE=""
+if [ "$IRC" = "1" ]; then
+  IRC_SITE="
+${IRC_DOMAIN} {
+	encode zstd gzip
+	handle /irc {
+		reverse_proxy 127.0.0.1:8097
+	}
+	handle {
+		header Content-Type \"text/plain; charset=utf-8\"
+		respond \"AgentBBS IRC (members-only). Native: ${IRC_DOMAIN}:6697 (TLS), SASL as your BBS name. Web/agents: wss://${IRC_DOMAIN}/irc. Or from the BBS: ssh -t irc@${DOMAIN}\"
+	}
+}
+"
+fi
+
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -524,7 +545,7 @@ ${DOMAIN} {
 		file_server
 	}
 }
-${GIT_SITE}${NEWS_SITE}
+${GIT_SITE}${NEWS_SITE}${IRC_SITE}
 # Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
 # *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
 # ask endpoint confirms <name> is a registered member, so random subdomains
@@ -558,13 +579,39 @@ ufw allow 80/tcp  >/dev/null
 ufw allow 443/tcp >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
-# ---- 9b. Ergo IRC server (co-located irc.${DOMAIN}; humans + agents) --------
-# A lightweight single-binary IRC network on its own ports, sharing this box and
-# this hostname's TLS cert. Native clients hit irc.${DOMAIN}:6697 (TLS); web
-# clients and agents hit wss://${DOMAIN}/irc (Caddy fronts Ergo's loopback
-# WebSocket). See docs/irc.md. Disable with IRC=0.
+# ---- 9a2. members are OS users (tilde.town model) --------------------------
+# Every BBS member gets a real OS account. It is IDENTITY ONLY — a nologin shell,
+# so it grants no shell access (BBS login is the wish server on :22, authenticated
+# against the sqlite store, not OpenSSH/PAM). This matches the tilde.town shape
+# and is what lets the IRC network gate on `getent passwd`. The agentbbs service
+# runs unprivileged and can't useradd, so we reconcile here (root) on every deploy
+# + the 15-min self-update timer: create an account for any member home dir that
+# lacks one. Existing members are migrated on the first run; new members get their
+# OS account within one reconcile (<= ${SELF_UPDATE_INTERVAL}).
+log "reconciling member OS users from ${DATA_DIR}/users"
+getent group members >/dev/null 2>&1 || groupadd --system members
+if [ -d "${DATA_DIR}/users" ]; then
+  for d in "${DATA_DIR}"/users/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    # Only valid member/login names; skip anything already taken (incl. system users).
+    case "$name" in *[!a-z0-9._-]* | "" ) continue ;; esac
+    id "$name" >/dev/null 2>&1 && continue
+    # Non-system account (uid auto-assigned >=1000, matching the IRC auth-script
+    # gate), home = the member's existing data dir, no shell.
+    useradd --no-create-home --home-dir "$d" --shell /usr/sbin/nologin --gid members "$name" 2>/dev/null \
+      && log "  + OS user ${name}" \
+      || warn "  could not create OS user ${name}"
+  done
+fi
+
+# ---- 9b. Ergo IRC server (co-located ${IRC_DOMAIN}; humans + agents) --------
+# A lightweight single-binary IRC network on its own ports. Native clients hit
+# ${IRC_DOMAIN}:6697 (TLS, using Caddy's Let's Encrypt cert for ${IRC_DOMAIN});
+# web clients and agents hit wss://${DOMAIN}/irc or wss://${IRC_DOMAIN}/irc
+# (Caddy fronts Ergo's loopback WebSocket). See docs/irc.md. Disable with IRC=0.
 if [ "$IRC" = "1" ]; then
-  log "installing Ergo IRC server v${ERGO_VERSION} (irc.${DOMAIN})"
+  log "installing Ergo IRC server v${ERGO_VERSION} (${IRC_DOMAIN})"
   case "$GOARCH" in
     amd64) ERGO_ARCH=x86_64 ;;
     arm64) ERGO_ARCH=arm64 ;;
@@ -597,28 +644,29 @@ if [ "$IRC" = "1" ]; then
   # Render the config template from the repo (the __TOKENS__ become real values).
   sed -e "s|__NETWORK__|${IRC_NETWORK}|g" \
       -e "s|__DOMAIN__|${DOMAIN}|g" \
+      -e "s|__IRC_DOMAIN__|${IRC_DOMAIN}|g" \
       -e "s|__DATA__|${ERGO_DATA}|g" \
       -e "s|__TLS_DIR__|${ERGO_DATA}/tls|g" \
       -e "s|__LANG_DIR__|/opt/ergo/languages|g" \
       -e "s|__OPER_PASSWORD_HASH__|${OPER_HASH}|g" \
-      -e "s|__USERS_DIR__|${DATA_DIR}/users|g" \
       "${SRC_DIR}/deploy/ergo/ircd.yaml" > /etc/ergo/ircd.yaml
   chmod 640 /etc/ergo/ircd.yaml
 
   # IRC is members-only: this auth-script approves a SASL login only if the
-  # account name maps to an AgentBBS member home dir under ${DATA_DIR}/users.
+  # account name is a real OS user (uid>=1000) — i.e. a BBS member, since
+  # members are provisioned as OS users in §4b (tilde.town model).
   install -m 0755 "${SRC_DIR}/deploy/ergo/auth-script.sh" /usr/local/bin/ergo-auth-member
 
-  # TLS for 6697: reuse Caddy's Let's Encrypt cert for ${DOMAIN}; self-signed
+  # TLS for 6697: reuse Caddy's Let's Encrypt cert for ${IRC_DOMAIN}; self-signed
   # fallback on first run before Caddy has issued it (the timer swaps it in).
   install -m 0755 "${SRC_DIR}/deploy/ergo/refresh-certs.sh" /usr/local/bin/ergo-refresh-certs
-  DOMAIN="$DOMAIN" ERGO_DATA="$ERGO_DATA" /usr/local/bin/ergo-refresh-certs || true
+  DOMAIN="$IRC_DOMAIN" ERGO_DATA="$ERGO_DATA" /usr/local/bin/ergo-refresh-certs || true
   if [ ! -s "$ERGO_DATA/tls/fullchain.pem" ]; then
-    warn "no Caddy cert for ${DOMAIN} yet — using a self-signed cert on 6697 until the ergo-certs timer swaps in the real one"
+    warn "no Caddy cert for ${IRC_DOMAIN} yet (is its A record pointed here?) — using a self-signed cert on 6697 until the ergo-certs timer swaps in the real one"
     ( cd /etc/ergo && /opt/ergo/ergo mkcerts --conf /etc/ergo/ircd.yaml --quiet 2>/dev/null ) \
       || openssl req -newkey rsa:2048 -nodes -days 90 -x509 \
            -keyout "$ERGO_DATA/tls/privkey.pem" -out "$ERGO_DATA/tls/fullchain.pem" \
-           -subj "/CN=irc.${DOMAIN}" 2>/dev/null
+           -subj "/CN=${IRC_DOMAIN}" 2>/dev/null
   fi
   chown -R ergo:ergo "$ERGO_DATA" /etc/ergo
 
@@ -628,7 +676,7 @@ if [ "$IRC" = "1" ]; then
   log "installing ergo.service"
   cat > /etc/systemd/system/ergo.service <<UNIT
 [Unit]
-Description=Ergo IRC server (AgentBBS — irc.${DOMAIN})
+Description=Ergo IRC server (AgentBBS — ${IRC_DOMAIN})
 After=network-online.target
 Wants=network-online.target
 
@@ -654,11 +702,11 @@ UNIT
   # Daily cert refresh from Caddy (tracks auto-renewals).
   cat > /etc/systemd/system/ergo-certs.service <<UNIT
 [Unit]
-Description=Refresh Ergo TLS cert from Caddy for ${DOMAIN}
+Description=Refresh Ergo TLS cert from Caddy for ${IRC_DOMAIN}
 
 [Service]
 Type=oneshot
-Environment=DOMAIN=${DOMAIN}
+Environment=DOMAIN=${IRC_DOMAIN}
 Environment=ERGO_DATA=${ERGO_DATA}
 ExecStart=/usr/local/bin/ergo-refresh-certs
 UNIT
@@ -901,8 +949,9 @@ cat <<DONE
   Web        https://${DOMAIN}/             site root
              https://${DOMAIN}/~<name>      a member's homepage
              https://<your-domain>          a member's homepage on a custom domain (auto-HTTPS)
-  IRC        irc.${DOMAIN}:6697 (TLS)       native clients   ${IRC:+(set IRC=0 to disable)}
+  IRC        ${IRC_DOMAIN}:6697 (TLS)   native clients (DNS: ${IRC_DOMAIN} A -> host)  ${IRC:+(set IRC=0 to disable)}
              wss://${DOMAIN}/irc            web clients + agents over WebSocket
+             ssh -t irc@${DOMAIN}          the in-BBS client (premium: /create #chan)
              /OPER admin <pw>               oper password in ${ENV_DIR}/ergo-oper.txt
   News       news.${DOMAIN}:563 (NNTPS)     newsreaders + agents   ${NEWS:+(set NEWS=0 to disable)}
              ssh -t news@${DOMAIN}          the in-BBS newsreader (DNS: news.${DOMAIN} A -> host)
