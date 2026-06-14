@@ -43,12 +43,6 @@ NEWS="${NEWS:-1}"                   # set 0 to skip the co-located Usenet/NNTP s
 ERGO_VERSION="${ERGO_VERSION:-2.18.0}"  # Ergo IRCd release to install
 IRC_NETWORK="${IRC_NETWORK:-ProfullstackBBS}"  # IRC network name shown to clients
 ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
-FORGEJO="${FORGEJO:-1}"                  # set 0 to skip the AgentGit Forgejo backend (git.${DOMAIN#*.})
-GIT_DOMAIN="${GIT_DOMAIN:-git.${DOMAIN#*.}}"  # AgentGit host (default: git.<root-of-DOMAIN>, e.g. git.profullstack.com)
-FORGEJO_VERSION="${FORGEJO_VERSION:-11.0.1}"  # Forgejo release to install
-FORGEJO_HTTP_ADDR="${FORGEJO_HTTP_ADDR:-127.0.0.1:3000}"  # Forgejo loopback HTTP (Caddy fronts it)
-FORGEJO_DATA="${FORGEJO_DATA:-/var/lib/forgejo}"  # Forgejo state dir (repos, db)
-FORGEJO_ADMIN_USER="${FORGEJO_ADMIN_USER:-agentgit-admin}"  # Forgejo admin used to provision members
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -264,13 +258,6 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 # AGENTBBS_FORWARDEMAIL_DOMAIN=${DOMAIN}
 # AGENTBBS_WEBMAIL_URL=https://webmail.${DOMAIN}
 
-# AgentGit (git.profullstack.com): every verified member — free and paid alike —
-# is provisioned a Forgejo account when they confirm their email. The admin token
-# is generated and filled in by setup.sh's Forgejo section (§9d). Without it,
-# provisioning is a silent no-op. See docs (logicsrc plugins/agentgit).
-AGENTBBS_FORGEJO_URL=https://${GIT_DOMAIN}
-AGENTBBS_FORGEJO_ADMIN_TOKEN=
-
 # PairUX video calls rendered as ASCII (video@ / tv@ PairUX sources):
 # AGENTBBS_LIVEKIT_URL=
 # AGENTBBS_LIVEKIT_KEY=
@@ -457,19 +444,6 @@ USER_LABEL_IDX=$(printf '%s' "$DOMAIN" | awk -F. '{print NF}')
 # hostname (the agentbbs NNTP server reuses it for NNTPS on :563 — see §9c).
 # Needs a DNS A record news.${DOMAIN} -> this host. The site itself just shows a
 # connect hint; the Usenet protocol is on :563, not HTTP. Omitted when NEWS=0.
-# AgentGit: front the loopback Forgejo backend at https://${GIT_DOMAIN}. Needs a
-# DNS A record git.<root> -> this host. Omitted when FORGEJO=0. Forgejo enforces
-# its own members-only access; agentbbs provisions the accounts (§9d).
-GIT_SITE=""
-if [ "$FORGEJO" = "1" ]; then
-  GIT_SITE="
-${GIT_DOMAIN} {
-	encode zstd gzip
-	reverse_proxy http://${FORGEJO_HTTP_ADDR}
-}
-"
-fi
-
 NEWS_SITE=""
 if [ "$NEWS" = "1" ]; then
   NEWS_SITE="
@@ -524,7 +498,7 @@ ${DOMAIN} {
 		file_server
 	}
 }
-${GIT_SITE}${NEWS_SITE}
+${NEWS_SITE}
 # Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
 # *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
 # ask endpoint confirms <name> is a registered member, so random subdomains
@@ -749,132 +723,6 @@ else
   systemctl disable --now agentbbs-news-certs.timer >/dev/null 2>&1 || true
 fi
 
-# ---- 9d. AgentGit: Forgejo backend (https://${GIT_DOMAIN}) ------------------
-# Self-hosted Forgejo that powers AgentGit. It listens on a loopback HTTP port
-# that Caddy fronts at https://${GIT_DOMAIN} (site block in §9). Members-only:
-# open registration is disabled and sign-in is required to view, so the only way
-# in is the account agentbbs provisions for every verified member (free + paid)
-# using the admin token captured below. See logicsrc plugins/agentgit. FORGEJO=0
-# disables it.
-FORGEJO_CONF=/etc/forgejo/app.ini
-if [ "$FORGEJO" = "1" ]; then
-  log "installing Forgejo (AgentGit backend, ${GIT_DOMAIN})"
-  id -u forgejo >/dev/null 2>&1 \
-    || useradd --system --shell /usr/sbin/nologin --home-dir "$FORGEJO_DATA" --create-home forgejo
-  install -d -m 0750 -o forgejo -g forgejo \
-    "$FORGEJO_DATA" "$FORGEJO_DATA/data" "$FORGEJO_DATA/log" "$FORGEJO_DATA/repos" /etc/forgejo
-
-  if [ ! -x /usr/local/bin/forgejo ] || ! /usr/local/bin/forgejo --version 2>/dev/null | grep -q "$FORGEJO_VERSION"; then
-    case "$(uname -m)" in
-      x86_64|amd64)  FJ_ARCH=amd64 ;;
-      aarch64|arm64) FJ_ARCH=arm64 ;;
-      *)             FJ_ARCH="" ; warn "unknown arch $(uname -m) for Forgejo; skipping download" ;;
-    esac
-    if [ -n "$FJ_ARCH" ]; then
-      log "downloading forgejo ${FORGEJO_VERSION} (${FJ_ARCH})"
-      curl -fsSL "https://codeberg.org/forgejo/forgejo/releases/download/v${FORGEJO_VERSION}/forgejo-${FORGEJO_VERSION}-linux-${FJ_ARCH}" \
-        -o /usr/local/bin/forgejo && chmod 0755 /usr/local/bin/forgejo \
-        || warn "forgejo download failed — backend will be unavailable"
-    fi
-  fi
-
-  # app.ini is written once so Forgejo-managed secrets survive redeploys.
-  if [ ! -f "$FORGEJO_CONF" ] && [ -x /usr/local/bin/forgejo ]; then
-    FJ_SECRET_KEY=$(sudo -u forgejo /usr/local/bin/forgejo generate secret SECRET_KEY)
-    FJ_INTERNAL_TOKEN=$(sudo -u forgejo /usr/local/bin/forgejo generate secret INTERNAL_TOKEN)
-    cat > "$FORGEJO_CONF" <<FJ
-APP_NAME = AgentGit
-RUN_USER = forgejo
-RUN_MODE = prod
-
-[server]
-PROTOCOL = http
-HTTP_ADDR = ${FORGEJO_HTTP_ADDR%%:*}
-HTTP_PORT = ${FORGEJO_HTTP_ADDR##*:}
-DOMAIN = ${GIT_DOMAIN}
-ROOT_URL = https://${GIT_DOMAIN}/
-DISABLE_SSH = true
-START_SSH_SERVER = false
-
-[database]
-DB_TYPE = sqlite3
-PATH = ${FORGEJO_DATA}/data/forgejo.db
-
-[repository]
-ROOT = ${FORGEJO_DATA}/repos
-
-[service]
-DISABLE_REGISTRATION = true
-REQUIRE_SIGNIN_VIEW = true
-DEFAULT_KEEP_EMAIL_PRIVATE = true
-
-[security]
-INSTALL_LOCK = true
-SECRET_KEY = ${FJ_SECRET_KEY}
-INTERNAL_TOKEN = ${FJ_INTERNAL_TOKEN}
-
-[log]
-ROOT_PATH = ${FORGEJO_DATA}/log
-FJ
-    chown forgejo:forgejo "$FORGEJO_CONF"
-    chmod 0640 "$FORGEJO_CONF"
-  fi
-
-  log "installing forgejo.service"
-  cat > /etc/systemd/system/forgejo.service <<UNIT
-[Unit]
-Description=Forgejo (AgentGit backend — ${GIT_DOMAIN})
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=forgejo
-Group=forgejo
-WorkingDirectory=${FORGEJO_DATA}
-Environment=GITEA_WORK_DIR=${FORGEJO_DATA}
-ExecStart=/usr/local/bin/forgejo web --config ${FORGEJO_CONF} --work-path ${FORGEJO_DATA}
-Restart=always
-RestartSec=2
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=${FORGEJO_DATA} /etc/forgejo
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-  systemctl daemon-reload
-  systemctl enable forgejo >/dev/null 2>&1 || true
-  systemctl restart forgejo
-  sleep 2
-  systemctl is-active --quiet forgejo \
-    || warn "forgejo failed to start — check: journalctl -u forgejo -n50"
-
-  # First-run: create the admin agentbbs uses to mint member accounts, and store
-  # an admin-scoped token in agentbbs.env. Guarded on the token being empty so
-  # reruns never create duplicate tokens.
-  if ! grep -qE '^AGENTBBS_FORGEJO_ADMIN_TOKEN=.+' "$ENV_DIR/agentbbs.env" 2>/dev/null; then
-    FJ_ADMIN_PW=$(head -c32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c24)
-    sudo -u forgejo GITEA_WORK_DIR="$FORGEJO_DATA" /usr/local/bin/forgejo admin user create \
-      --admin --username "$FORGEJO_ADMIN_USER" --email "agentgit@${GIT_DOMAIN}" \
-      --password "$FJ_ADMIN_PW" --must-change-password=false --config "$FORGEJO_CONF" >/dev/null 2>&1 \
-      || true
-    FJ_TOKEN=$(sudo -u forgejo GITEA_WORK_DIR="$FORGEJO_DATA" /usr/local/bin/forgejo admin user generate-access-token \
-      --username "$FORGEJO_ADMIN_USER" --token-name "agentbbs-$(date +%s)" --scopes write:admin \
-      --config "$FORGEJO_CONF" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
-    if [ -n "$FJ_TOKEN" ]; then
-      upsert_env AGENTBBS_FORGEJO_URL "https://${GIT_DOMAIN}"
-      upsert_env AGENTBBS_FORGEJO_ADMIN_TOKEN "$FJ_TOKEN"
-      log "Forgejo admin token provisioned into agentbbs.env"
-    else
-      warn "could not mint Forgejo admin token — set AGENTBBS_FORGEJO_ADMIN_TOKEN by hand (journalctl -u forgejo)"
-    fi
-  fi
-else
-  systemctl disable --now forgejo >/dev/null 2>&1 || true
-fi
-
 # ---- 10. firewall + start agentbbs on :22 ----------------------------------
 log "configuring firewall + starting agentbbs"
 ufw allow 22/tcp >/dev/null
@@ -906,8 +754,6 @@ cat <<DONE
              /OPER admin <pw>               oper password in ${ENV_DIR}/ergo-oper.txt
   News       news.${DOMAIN}:563 (NNTPS)     newsreaders + agents   ${NEWS:+(set NEWS=0 to disable)}
              ssh -t news@${DOMAIN}          the in-BBS newsreader (DNS: news.${DOMAIN} A -> host)
-  AgentGit   https://${GIT_DOMAIN}          git for members (auto-account on email verify)   ${FORGEJO:+(set FORGEJO=0 to disable)}
-             DNS: ${GIT_DOMAIN} A -> this host
 
   Config     ${ENV_DIR}/agentbbs.env   (set CoinPay + LiveKit, then: systemctl restart agentbbs)
   Logs       journalctl -u agentbbs -f          (IRC: journalctl -u ergo -f)

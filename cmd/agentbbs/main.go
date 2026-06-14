@@ -53,7 +53,6 @@ import (
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
-	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
@@ -98,7 +97,6 @@ type app struct {
 	sandbox  *sandbox.Runner
 	mail     mail.Config
 	fe       forwardemail.Config // premium @bbs email provisioning
-	forgejo  forgejo.Config      // AgentGit git.profullstack.com account provisioning
 	live     *liveReg            // in-memory live-session registry (admin console)
 	gamesReg *games.Registry     // AgentGames catalog
 	mm       *games.Matchmaker   // AgentGames matchmaker (agent-vs-agent)
@@ -108,7 +106,15 @@ type app struct {
 	newsAddr string // loopback NNTP address the news@ reader dials
 }
 
+// Version is the agentbbs stack release, surfaced via `agentbbs version` and
+// logged at startup. Bump on each release of the bbs.profullstack.com stack.
+const Version = "v0.1.0"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("agentbbs " + Version)
+		return
+	}
 	dataDir := env("AGENTBBS_DATA", "./data")
 	_ = os.MkdirAll(filepath.Join(dataDir, "users"), 0o755)
 
@@ -149,7 +155,6 @@ func main() {
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
 		mail:    mail.ConfigFromEnv(),
 		fe:      fe,
-		forgejo: forgejo.ConfigFromEnv(),
 		live:    newLiveReg(),
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
@@ -258,7 +263,7 @@ func main() {
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Info("agentbbs listening", "addr", addr)
+	log.Info("agentbbs listening", "addr", addr, "version", Version)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 			log.Error("serve", "err", err)
@@ -571,7 +576,6 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 		}
 		if ok {
 			*u = vu
-			a.provisionGit(u)
 			wish.Println(s, "  Email confirmed ✓")
 			return true
 		}
@@ -750,28 +754,8 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
 		return
 	}
-	a.provisionGit(&u)
 	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
 		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
-}
-
-// provisionGit ensures a verified member has a git.profullstack.com account on
-// the AgentGit Forgejo backend. Every verified member gets one — free and paid
-// alike; plan only affects quotas, enforced by AgentGit, not account existence.
-// Failures are logged but never block BBS verification, and it is a no-op when
-// Forgejo is unconfigured.
-func (a *app) provisionGit(u *store.User) {
-	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
-		return
-	}
-	created, err := a.forgejo.EnsureUser(u.Name, u.Email)
-	if err != nil {
-		log.Error("forgejo provision", "user", u.Name, "err", err)
-		return
-	}
-	if created {
-		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
-	}
 }
 
 // verifyPage renders the minimal confirmation result page.
