@@ -343,13 +343,26 @@ Port ${ADMIN_SSH_PORT}
 SSHD
 # Open the new admin port FIRST so the upcoming firewall enable can't lock us out.
 ufw allow "${ADMIN_SSH_PORT}/tcp" >/dev/null
-if sshd -t; then
-  systemctl restart ssh 2>/dev/null || systemctl restart sshd
+sshd -t || die "sshd config test failed; not restarting (you are not locked out)"
+
+# Ubuntu 22.10+/24.04 socket-activate sshd via ssh.socket, which OWNS the listen
+# port and ignores sshd_config's Port. Override the socket's ListenStream so the
+# admin port actually moves; otherwise (classic sshd) just restart the service.
+if systemctl cat ssh.socket >/dev/null 2>&1; then
+  log "ssh is socket-activated (Ubuntu 24.04) — moving the socket to :${ADMIN_SSH_PORT}"
+  install -d -m 0755 /etc/systemd/system/ssh.socket.d
+  cat > /etc/systemd/system/ssh.socket.d/10-agentbbs-port.conf <<SOCK
+[Socket]
+ListenStream=
+ListenStream=${ADMIN_SSH_PORT}
+SOCK
+  systemctl daemon-reload
+  systemctl restart ssh.socket
 else
-  die "sshd config test failed; not restarting (you are not locked out)"
+  systemctl restart ssh 2>/dev/null || systemctl restart sshd
 fi
 # Verify the admin port is actually listening before we free :22.
-for _ in 1 2 3 4 5; do
+for _ in 1 2 3 4 5 6 7 8; do
   ss -tlnp 2>/dev/null | grep -q ":${ADMIN_SSH_PORT} " && break
   sleep 1
 done
