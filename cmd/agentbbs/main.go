@@ -8,6 +8,7 @@
 //	                emailed code, then offers $10 lifetime Premium (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
+//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
 //
 // Subcommands:
 //
@@ -74,6 +75,7 @@ type app struct {
 	sandbox  *sandbox.Runner
 	mail     mail.Config
 	fe       forwardemail.Config // premium @bbs email provisioning
+	live     *liveReg            // in-memory live-session registry (admin console)
 	dataDir  string
 	assets   string
 	host     string // public hostname used in user-facing messages
@@ -108,6 +110,7 @@ func main() {
 		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
 		mail:    mail.ConfigFromEnv(),
 		fe:      fe,
+		live:    newLiveReg(),
 		dataDir: dataDir,
 		assets:  env("AGENTBBS_ASSETS", "./assets"),
 		host:    host,
@@ -167,6 +170,7 @@ func main() {
 		wish.WithIdleTimeout(30*time.Minute),
 		wish.WithMiddleware(
 			a.router(),
+			a.track(), // register every session for the admin console
 			logging.Middleware(),
 		),
 	)
@@ -194,8 +198,10 @@ func main() {
 // a terminal (it prints and disconnects), and pod@ checks its PTY itself.
 func (a *app) router() wish.Middleware {
 	btMw := bm.Middleware(a.teaHandler)
+	adminMw := bm.Middleware(a.adminTeaHandler)
 	return func(next ssh.Handler) ssh.Handler {
 		hubHandler := activeterm.Middleware()(btMw(next))
+		adminHandler := activeterm.Middleware()(adminMw(next))
 		return func(s ssh.Session) {
 			user := strings.ToLower(s.User())
 			code, isVideo := calls.RouteCode(user)
@@ -204,6 +210,8 @@ func (a *app) router() wish.Middleware {
 				a.handleJoin(s)
 			case auth.IsDomainName(user):
 				a.handleDomain(s)
+			case auth.IsAdminName(user):
+				adminHandler(s)
 			case auth.IsPodName(user):
 				a.handlePod(s)
 			case isVideo:
@@ -245,6 +253,10 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 			wish.Fatalln(s, "account error: "+err.Error())
 			return nil, nil
 		}
+		if su.Banned {
+			wish.Fatalln(s, "this account is suspended. Contact an operator if you think this is a mistake.")
+			return nil, nil
+		}
 		if su.Name != username {
 			wish.Println(s, "note: this key belongs to "+su.Name+" — signed in as "+su.Name+".")
 		}
@@ -266,7 +278,7 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		// URL works the moment a member first signs in.
 		seedHomepage(filepath.Join(ctx.DataDir, "public_html"), u.Name, a.host)
 	}
-	return hub.New(u, ctx, a.registry), []tea.ProgramOption{tea.WithAltScreen()}
+	return hub.New(u, ctx, a.enabledPlugins()), []tea.ProgramOption{tea.WithAltScreen()}
 }
 
 // handleJoin runs onboarding interactively in one SSH session: register the
@@ -678,6 +690,11 @@ func (a *app) handlePod(s ssh.Session) {
 	u, found, err := a.st.UserByFingerprint(fp)
 	if err != nil || !found {
 		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
 		_ = s.Exit(1)
 		return
 	}
