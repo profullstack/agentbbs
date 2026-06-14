@@ -1,0 +1,25 @@
+# Go tests for agentbbs. agentbbs is a Go project (see go.mod); this runs the
+# package tests on pull requests and pushes to main. Build/vet live in ci.yml.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - run: go test ./...
