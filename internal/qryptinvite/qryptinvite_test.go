@@ -148,8 +148,16 @@ func TestTamperedTokenFails(t *testing.T) {
 		t.Fatal("original token failed to verify")
 	}
 
-	// Tampering with the signature segment must also fail.
-	badSig := parts[0] + "." + parts[1] + "." + flipLastChar(parts[2])
+	// Tampering with the signature segment must also fail. Corrupt a DECODED
+	// signature byte (not a base64 char): flipping the last base64 char can land
+	// on the unused trailing bits of a 64-byte signature, which decode back to
+	// the same bytes and still verify — that made this test flaky.
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sigBytes) == 0 {
+		t.Fatalf("decode signature segment: %v", err)
+	}
+	sigBytes[0] ^= 0xFF
+	badSig := parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString(sigBytes)
 	if verifySig(badSig, pub) {
 		t.Fatal("token with corrupted signature verified but should have failed")
 	}
@@ -166,20 +174,6 @@ func verifySig(token string, pub ed25519.PublicKey) bool {
 		return false
 	}
 	return ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig)
-}
-
-func flipLastChar(s string) string {
-	if s == "" {
-		return s
-	}
-	b := []byte(s)
-	last := b[len(b)-1]
-	if last == 'A' {
-		b[len(b)-1] = 'B'
-	} else {
-		b[len(b)-1] = 'A'
-	}
-	return string(b)
 }
 
 func TestParsePrivateKeyAcceptsSeedAndFull(t *testing.T) {

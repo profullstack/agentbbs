@@ -24,7 +24,7 @@ import (
 
 var (
 	theme       = ui.New(ui.Green)
-	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(ui.Cyan)
+	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11d2a"))
 )
 
 // SessionApp is a hub entry that takes over the terminal — a pod shell, the IRC

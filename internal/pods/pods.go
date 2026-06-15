@@ -70,6 +70,23 @@ func (m *Manager) publicHTMLMount(user string) (host, spec string) {
 	return host, host + ":/home/dev/public_html"
 }
 
+// hasMount reports whether the named container already has a mount at the given
+// destination path. Used to detect pods created before a mount was introduced so
+// ensure can recreate them. A failed inspect reports false (treat as missing).
+func (m *Manager) hasMount(name, dest string) bool {
+	out, err := exec.Command(m.engine, "container", "inspect",
+		"-f", "{{range .Mounts}}{{println .Destination}}{{end}}", name).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == dest {
+			return true
+		}
+	}
+	return false
+}
+
 // Engine reports the active container engine.
 func (m *Manager) Engine() string { return m.engine }
 
@@ -106,8 +123,21 @@ func (m *Manager) ensure(user string) (string, error) {
 	}
 	// Already exists?
 	if err := exec.Command(m.engine, "container", "inspect", name).Run(); err == nil {
-		_ = exec.Command(m.engine, "start", name).Run() // no-op if running
-		return name, nil
+		// Self-heal pods created before the homepage bind existed: recreate so
+		// ~/public_html maps to the served dir. The named home volume persists
+		// across rm, so the member's files are kept. Only heal when the pod is
+		// idle (no live session) — never pull a running pod out from under an
+		// active session; a still-unbound pod heals on its next idle attach.
+		m.mu.Lock()
+		idle := m.attached[name] == 0
+		m.mu.Unlock()
+		if pubSpec != "" && idle && !m.hasMount(name, "/home/dev/public_html") {
+			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate with the bind
+		} else {
+			_ = exec.Command(m.engine, "start", name).Run() // no-op if running
+			m.tuneApt(name)
+			return name, nil
+		}
 	}
 	args := []string{
 		"run", "-d",
@@ -148,7 +178,26 @@ func (m *Manager) ensure(user string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pods: create failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	m.tuneApt(name)
 	return name, nil
+}
+
+// tuneApt makes apt usable inside the hardened pod. apt drops privileges to
+// the _apt user for downloads (setgroups/setegid/seteuid), which needs
+// CAP_SETUID/CAP_SETGID/CAP_CHOWN — caps we intentionally drop (cap-drop ALL).
+// Rather than re-grant those to the whole container, disable apt's download
+// sandbox so package management runs as the pod's (rootless-mapped) root.
+//
+// Only applies to the podman/container-root path; under docker the pod runs as
+// uid 1000 and can't write /etc/apt (apt isn't usable there by design). Failure
+// is non-fatal: a missing config just means the user sees the old apt errors.
+func (m *Manager) tuneApt(name string) {
+	if m.engine == "docker" {
+		return
+	}
+	_ = exec.Command(m.engine, "exec", "--user", "root", name,
+		"sh", "-c", `printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/00no-sandbox`,
+	).Run()
 }
 
 // Attach provisions the pod and wires the SSH session to a shell inside it.

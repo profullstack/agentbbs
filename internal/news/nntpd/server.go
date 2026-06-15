@@ -142,12 +142,16 @@ func (s *Server) Process(nc net.Conn) {
 		if err != nil {
 			return
 		}
-		cmd := strings.Split(l, " ")
-		args := []string{}
-		if len(cmd) > 1 {
-			args = cmd[1:]
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
+			err = handleDefault(nil, sess, c)
+		} else {
+			args := []string{}
+			if len(fields) > 1 {
+				args = fields[1:]
+			}
+			err = sess.dispatchCommand(fields[0], args, c)
 		}
-		err = sess.dispatchCommand(cmd[0], args, c)
 		if err != nil {
 			if _, isNNTPError := err.(*NNTPError); err == io.EOF {
 				return
@@ -170,8 +174,9 @@ func parseRange(spec string) (low, high int64) {
 		h, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			h = math.MaxInt64
+			return 0, h
 		}
-		return 0, h
+		return h, h
 	}
 	l, _ := strconv.ParseInt(parts[0], 10, 64)
 	h, err := strconv.ParseInt(parts[1], 10, 64)
@@ -356,6 +361,9 @@ func handlePost(args []string, s *session, c *textproto.Conn) error {
 func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	if !s.backend.AllowPost() {
 		return ErrNotWanted
+	}
+	if len(args) < 1 {
+		return ErrSyntax
 	}
 	article, err := s.backend.GetArticle(nil, args[0])
 	if article != nil {

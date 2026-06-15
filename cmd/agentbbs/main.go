@@ -8,6 +8,8 @@
 //	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
+//	ssh <name>@host (from another account) prints a finger card for that member
+//	ssh msg@host U  leave member U a message: `ssh msg@host U hi` or pipe stdin
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only;
 //	                sysop@/root@ are aliases)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
@@ -53,6 +55,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/profullstack/agentbbs/internal/auth"
+	"github.com/profullstack/agentbbs/internal/brand"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/forgejo"
@@ -60,6 +63,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/mail"
+	"github.com/profullstack/agentbbs/internal/mailbox"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -71,6 +75,7 @@ import (
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	"github.com/profullstack/agentbbs/plugins/members"
 	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
 
@@ -170,7 +175,7 @@ func main() {
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), members.Plugin{}, qryptinviteplugin.Plugin{}, about.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
@@ -315,6 +320,10 @@ func (a *app) router() wish.Middleware {
 				a.handleTorCmd(s)
 			case auth.IsNewsName(user):
 				a.handleNews(s)
+			case auth.IsMailName(user):
+				a.handleMail(s)
+			case auth.IsMsgName(user):
+				a.handleMsg(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -329,12 +338,9 @@ func (a *app) router() wish.Middleware {
 }
 
 // bbsBanner is the ASCII brand mark shown atop the hub menu and the join@ flow.
-const bbsBanner = "" +
-	"┌─┐┬─┐┌─┐┌─┐┬ ┬┬  ┬  ┌─┐┌┬┐┌─┐┌─┐┬┌─\n" +
-	"├─┘├┬┘│ │├┤ │ ││  │  └─┐ │ ├─┤│  ├┴┐\n" +
-	"┴  ┴└─└─┘└  └─┘┴─┘┴─┘└─┘ ┴ ┴ ┴└─┘┴ ┴ .com"
+var bbsBanner = brand.Logo()
 
-var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38bdf8"))
+var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11d2a"))
 
 // hubMOTD is the welcome message shown in a box on the hub menu. The body is
 // operator-overridable via AGENTBBS_MOTD; it is tailored for guests vs members.
@@ -345,7 +351,11 @@ func (a *app) hubMOTD(u auth.User) string {
 		return "You're browsing as a guest.\n" + body +
 			"\nssh join@" + a.host + " to claim a username, a pod & a homepage."
 	}
-	return "Welcome back, " + u.Name + ".\n" + body
+	welcome := "Welcome back, " + u.Name + "."
+	if n, err := a.st.UnreadCount(u.Name); err == nil && n > 0 {
+		welcome += fmt.Sprintf("  📬 %d unread — open Members ▸ inbox (i).", n)
+	}
+	return welcome + "\n" + body
 }
 
 // teaHandler builds the hub model for guests, members, and agents.
@@ -394,7 +404,7 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	sessID, _ := a.st.RecordSession(u.StoreID, s.User(), remoteIP(s), "hub")
 	go func() { <-s.Context().Done(); _ = a.st.EndSession(sessID) }()
 
-	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets}
+	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets, Host: a.host}
 	if u.Kind != auth.Guest {
 		ctx.DataDir = filepath.Join(a.dataDir, "users", u.Name)
 		_ = os.MkdirAll(filepath.Join(ctx.DataDir, "wads"), 0o755)
@@ -462,6 +472,28 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 		Description: "members-only Usenet/NNTP discussion",
 		Locked:      newsLock,
 		Cmd:         sessionExec{run: func() error { return a.runNews(s, su.Name) }},
+	})
+
+	// Mail — a Founding Lifetime Member perk: the AgentMail TUI.
+	mailLock := ""
+	switch {
+	case guest:
+		mailLock = membersOnly
+	case !su.Premium:
+		mailLock = "Founding Lifetime Member feature ($99 one-time) — upgrade: ssh join@" + a.host
+	}
+	apps = append(apps, hub.SessionApp{
+		Title:       "Mail",
+		Description: "your " + a.fe.Domain + " mailbox",
+		Locked:      mailLock,
+		Cmd: sessionExec{run: func() error {
+			c, err := a.mailClientFor(su)
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			return mailbox.RunReader(s, c)
+		}},
 	})
 
 	// Tor — a Founding Lifetime Member perk: a torsocks shell in the pod.
@@ -1239,6 +1271,83 @@ func (a *app) runNews(s ssh.Session, name string) error {
 	return news.RunReader(s, addr, name)
 }
 
+// mailClientFor builds a paid-gated AgentMail client for a member, connecting to
+// the self-hosted Mailu backend. IMAP uses Dovecot master-user auth (login
+// "<name>*<master>") so the BBS gateway can open any member's mailbox with one
+// secret; SMTP defaults to the co-located relay (no auth). Returns an error if
+// the IMAP connection/login fails.
+func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
+	domain := env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
+	login := su.Name
+	if master := os.Getenv("AGENTBBS_MAIL_MASTER_USER"); master != "" {
+		login = su.Name + "*" + master
+	}
+	cfg := mailbox.IMAPConfig{
+		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", domain+":993"),
+		SMTPAddr: env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"),
+		Username: login,
+		Password: os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+		// SMTPUser/SMTPPass left empty: submit via the trusted local relay.
+	}
+	tr, err := mailbox.NewIMAPTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return mailbox.NewClient(tr, mailbox.Identity{Name: su.Name, Paid: su.Premium}, domain, 50), nil
+}
+
+// handleMail routes a Founding Lifetime member into AgentMail: an interactive
+// TUI when a PTY is present and no command is given, or the JSON bot mode
+// (ssh mail@host <cmd>, or no PTY) for agents.
+func (a *app) handleMail(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "mail@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	if !a.ensurePremium(&u) {
+		wish.Println(s, "  mail is a Founding Lifetime Member feature ($99 one-time). Upgrade: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "mail")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	c, err := a.mailClientFor(u)
+	if err != nil {
+		wish.Println(s, "mail: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	defer c.Close()
+
+	args := s.Command()
+	_, _, hasPty := s.Pty()
+	if len(args) > 0 || !hasPty {
+		// Agent/bot mode: JSON in, JSON out.
+		if err := mailbox.RunBot(s.Context(), c, args, s, s); err != nil {
+			_ = s.Exit(1)
+		}
+		return
+	}
+	if err := mailbox.RunReader(s, c); err != nil {
+		wish.Println(s, "mail: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
 // handleTorCmd runs an arbitrary command through Tor (torsocks) inside the
 // member's pod, never on the host. Premium; requires a PTY.
 func (a *app) handleTorCmd(s ssh.Session) {
@@ -1320,6 +1429,62 @@ func (a *app) handleChat(s ssh.Session) {
 	if err := chat.Handle(s, a.st, u); err != nil {
 		wish.Println(s, "chat: "+err.Error())
 	}
+}
+
+// handleMsg is the member-to-member messaging route: `ssh msg@host <user> [text]`
+// leaves a note in <user>'s BBS inbox. The body is the remaining args, or stdin
+// when none are given (so `echo hi | ssh msg@host bob` works). Members only;
+// the recipient reads it in the hub's Members ▸ inbox.
+func (a *app) handleMsg(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "msg@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	from, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 {
+		wish.Println(s, "usage: ssh msg@"+a.host+" <user> [message]   (or pipe the message on stdin)")
+		_ = s.Exit(1)
+		return
+	}
+	to := strings.ToLower(args[0])
+	recipient, ok, err := a.st.UserByName(to)
+	if err != nil || !ok {
+		wish.Println(s, "no member named "+to+" — check the spelling (ssh "+to+"@"+a.host+" to finger).")
+		_ = s.Exit(1)
+		return
+	}
+	if recipient.Name == from.Name {
+		wish.Println(s, "you can't message yourself.")
+		_ = s.Exit(1)
+		return
+	}
+	body := strings.TrimSpace(strings.Join(args[1:], " "))
+	if body == "" {
+		// No inline text — read the message from stdin (piped, or typed then ^D).
+		b, _ := io.ReadAll(io.LimitReader(s, 64*1024))
+		body = strings.TrimSpace(string(b))
+	}
+	if body == "" {
+		wish.Println(s, "empty message — nothing sent.")
+		_ = s.Exit(1)
+		return
+	}
+	if err := a.st.SendMessage(from.Name, recipient.Name, body); err != nil {
+		wish.Println(s, "could not send: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_, _ = a.st.RecordSession(from.ID, s.User(), remoteIP(s), "msg")
+	wish.Println(s, "✓ message left for "+recipient.Name+" — they'll see it in Members ▸ inbox.")
+	_ = s.Exit(0)
 }
 
 // handleFinger prints a classic finger card when someone ssh's to an

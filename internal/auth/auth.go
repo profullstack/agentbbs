@@ -66,6 +66,10 @@ var IRCNames = map[string]bool{"irc": true}
 // via an in-process newsreader. Free for any registered member, like irc@.
 var NewsNames = map[string]bool{"news": true}
 
+// MailNames route a Founding Lifetime (paid) member into the AgentMail client —
+// an interactive TUI with a PTY, or a JSON bot mode with a command/no PTY.
+var MailNames = map[string]bool{"mail": true}
+
 // GameNames are usernames that route to AgentGames: the line-delimited-JSON
 // agent-vs-agent match protocol (PRD §5.2). `play@` stays a guest hub alias.
 var GameNames = map[string]bool{"game": true, "games": true}
@@ -97,6 +101,16 @@ func IsTorName(u string) bool { return TorNames[strings.ToLower(u)] }
 // IsNewsName reports whether the SSH username requests the in-BBS newsreader.
 func IsNewsName(u string) bool { return NewsNames[strings.ToLower(u)] }
 
+// IsMailName reports whether the SSH username requests the AgentMail client.
+func IsMailName(u string) bool { return MailNames[strings.ToLower(u)] }
+
+// MsgNames route a member-to-member message: `ssh msg@host <user>` leaves a
+// note in the recipient's BBS inbox (store-and-forward, see the Members plugin).
+var MsgNames = map[string]bool{"msg": true, "message": true}
+
+// IsMsgName reports whether the SSH username requests the messaging route.
+func IsMsgName(u string) bool { return MsgNames[strings.ToLower(u)] }
+
 // systemReserved are names that don't drive an SSH route but would still
 // collide with a per-user subdomain (<name>.<host>), the agent route, or common
 // infra hostnames — so members may not claim them as account names.
@@ -113,7 +127,8 @@ var systemReserved = map[string]bool{
 func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
-		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] || systemReserved[n] {
+		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
+		MsgNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes
