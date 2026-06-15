@@ -362,6 +362,9 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 	if !s.backend.AllowPost() {
 		return ErrNotWanted
 	}
+	if len(args) < 1 {
+		return ErrSyntax
+	}
 	article, err := s.backend.GetArticle(nil, args[0])
 	if article != nil {
 		return ErrNotWanted
