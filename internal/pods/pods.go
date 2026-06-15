@@ -135,7 +135,6 @@ func (m *Manager) ensure(user string) (string, error) {
 			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate with the bind
 		} else {
 			_ = exec.Command(m.engine, "start", name).Run() // no-op if running
-			m.tuneApt(name)
 			return name, nil
 		}
 	}
@@ -178,26 +177,7 @@ func (m *Manager) ensure(user string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pods: create failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	m.tuneApt(name)
 	return name, nil
-}
-
-// tuneApt makes apt usable inside the hardened pod. apt drops privileges to
-// the _apt user for downloads (setgroups/setegid/seteuid), which needs
-// CAP_SETUID/CAP_SETGID/CAP_CHOWN — caps we intentionally drop (cap-drop ALL).
-// Rather than re-grant those to the whole container, disable apt's download
-// sandbox so package management runs as the pod's (rootless-mapped) root.
-//
-// Only applies to the podman/container-root path; under docker the pod runs as
-// uid 1000 and can't write /etc/apt (apt isn't usable there by design). Failure
-// is non-fatal: a missing config just means the user sees the old apt errors.
-func (m *Manager) tuneApt(name string) {
-	if m.engine == "docker" {
-		return
-	}
-	_ = exec.Command(m.engine, "exec", "--user", "root", name,
-		"sh", "-c", `printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/00no-sandbox`,
-	).Run()
 }
 
 // Attach provisions the pod and wires the SSH session to a shell inside it.
