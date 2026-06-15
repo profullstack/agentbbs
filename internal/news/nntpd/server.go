@@ -142,12 +142,16 @@ func (s *Server) Process(nc net.Conn) {
 		if err != nil {
 			return
 		}
-		cmd := strings.Split(l, " ")
-		args := []string{}
-		if len(cmd) > 1 {
-			args = cmd[1:]
+		fields := strings.Fields(l)
+		if len(fields) == 0 {
+			err = handleDefault(nil, sess, c)
+		} else {
+			args := []string{}
+			if len(fields) > 1 {
+				args = fields[1:]
+			}
+			err = sess.dispatchCommand(fields[0], args, c)
 		}
-		err = sess.dispatchCommand(cmd[0], args, c)
 		if err != nil {
 			if _, isNNTPError := err.(*NNTPError); err == io.EOF {
 				return
