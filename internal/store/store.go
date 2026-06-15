@@ -5,6 +5,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -42,7 +43,9 @@ func scanUser(sc interface{ Scan(...any) error }) (User, error) {
 	u.EmailVerified = verified != 0
 	u.Premium = premium != 0
 	u.Banned = banned != 0
-	u.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	if t, err := time.Parse(time.RFC3339, created); err == nil {
+		u.CreatedAt = t
+	}
 	return u, nil
 }
 
@@ -516,8 +519,12 @@ func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
 		if err != nil {
 			return User{}, err
 		}
-		id, _ := res.LastInsertId()
-		return User{ID: id, Name: name, Kind: kind, PubKeyFP: fp, CreatedAt: time.Now().UTC()}, nil
+		id, err := res.LastInsertId()
+		if err != nil {
+			return User{}, fmt.Errorf("get user id after insert: %w", err)
+		}
+		return User{
+			ID: id, Name: name, Kind: kind, PubKeyFP: fp, CreatedAt: time.Now().UTC()}, nil
 	case err != nil:
 		return User{}, err
 	}
