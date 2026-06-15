@@ -22,6 +22,9 @@ type Context struct {
 	DataDir string
 	// AssetsDir is the read-only platform assets tree (wads, binaries).
 	AssetsDir string
+	// Host is the BBS hostname (e.g. bbs.profullstack.com), for building
+	// member homepage URLs (https://Host/~name) and similar links.
+	Host string
 }
 
 // Plugin is the only integration point between a feature and the hub.
