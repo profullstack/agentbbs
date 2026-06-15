@@ -170,8 +170,9 @@ func parseRange(spec string) (low, high int64) {
 		h, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			h = math.MaxInt64
+			return 0, h
 		}
-		return 0, h
+		return h, h
 	}
 	l, _ := strconv.ParseInt(parts[0], 10, 64)
 	h, err := strconv.ParseInt(parts[1], 10, 64)
