@@ -189,7 +189,7 @@ func main() {
 		}()
 	}
 
-	if m, err := pods.Detect(); err == nil {
+	if m, err := pods.Detect(filepath.Join(dataDir, "users")); err == nil {
 		a.pods = m
 		log.Info("pods enabled", "engine", m.Engine())
 	} else {
