@@ -1,8 +1,10 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,5 +142,23 @@ func TestFlagAndDelete(t *testing.T) {
 	}
 	if _, ok, _ := tr.ReadMessage(context.Background(), Inbox, 1); ok {
 		t.Fatal("uid 1 should be deleted")
+	}
+}
+
+func TestRunBotFlagCommandIsCaseInsensitive(t *testing.T) {
+	tr := seeded()
+	c := paidClient(tr)
+	var out bytes.Buffer
+
+	if err := RunBot(context.Background(), c, []string{"FLAG", Inbox, "1"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, _, _ := tr.ReadMessage(context.Background(), Inbox, 1)
+	if !msg.Flagged {
+		t.Fatal("uppercase FLAG should set the flagged flag")
+	}
+	if msg.Seen {
+		t.Fatal("uppercase FLAG should not mark the message seen")
 	}
 }
