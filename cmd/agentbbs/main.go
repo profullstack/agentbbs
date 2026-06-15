@@ -8,6 +8,8 @@
 //	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
+//	ssh <name>@host (from another account) prints a finger card for that member
+//	ssh msg@host U  leave member U a message: `ssh msg@host U hi` or pipe stdin
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
 //	                agent-vs-agent (also on wss://host/play). See docs/agentgames.md
@@ -72,6 +74,7 @@ import (
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	"github.com/profullstack/agentbbs/plugins/members"
 	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
 
@@ -171,7 +174,7 @@ func main() {
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), members.Plugin{}, qryptinviteplugin.Plugin{}, about.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
@@ -318,6 +321,8 @@ func (a *app) router() wish.Middleware {
 				a.handleNews(s)
 			case auth.IsMailName(user):
 				a.handleMail(s)
+			case auth.IsMsgName(user):
+				a.handleMsg(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -345,7 +350,11 @@ func (a *app) hubMOTD(u auth.User) string {
 		return "You're browsing as a guest.\n" + body +
 			"\nssh join@" + a.host + " to claim a username, a pod & a homepage."
 	}
-	return "Welcome back, " + u.Name + ".\n" + body
+	welcome := "Welcome back, " + u.Name + "."
+	if n, err := a.st.UnreadCount(u.Name); err == nil && n > 0 {
+		welcome += fmt.Sprintf("  📬 %d unread — open Members ▸ inbox (i).", n)
+	}
+	return welcome + "\n" + body
 }
 
 // teaHandler builds the hub model for guests, members, and agents.
@@ -394,7 +403,7 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	sessID, _ := a.st.RecordSession(u.StoreID, s.User(), remoteIP(s), "hub")
 	go func() { <-s.Context().Done(); _ = a.st.EndSession(sessID) }()
 
-	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets}
+	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets, Host: a.host}
 	if u.Kind != auth.Guest {
 		ctx.DataDir = filepath.Join(a.dataDir, "users", u.Name)
 		_ = os.MkdirAll(filepath.Join(ctx.DataDir, "wads"), 0o755)
@@ -1419,6 +1428,62 @@ func (a *app) handleChat(s ssh.Session) {
 	if err := chat.Handle(s, a.st, u); err != nil {
 		wish.Println(s, "chat: "+err.Error())
 	}
+}
+
+// handleMsg is the member-to-member messaging route: `ssh msg@host <user> [text]`
+// leaves a note in <user>'s BBS inbox. The body is the remaining args, or stdin
+// when none are given (so `echo hi | ssh msg@host bob` works). Members only;
+// the recipient reads it in the hub's Members ▸ inbox.
+func (a *app) handleMsg(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "msg@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	from, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 {
+		wish.Println(s, "usage: ssh msg@"+a.host+" <user> [message]   (or pipe the message on stdin)")
+		_ = s.Exit(1)
+		return
+	}
+	to := strings.ToLower(args[0])
+	recipient, ok, err := a.st.UserByName(to)
+	if err != nil || !ok {
+		wish.Println(s, "no member named "+to+" — check the spelling (ssh "+to+"@"+a.host+" to finger).")
+		_ = s.Exit(1)
+		return
+	}
+	if recipient.Name == from.Name {
+		wish.Println(s, "you can't message yourself.")
+		_ = s.Exit(1)
+		return
+	}
+	body := strings.TrimSpace(strings.Join(args[1:], " "))
+	if body == "" {
+		// No inline text — read the message from stdin (piped, or typed then ^D).
+		b, _ := io.ReadAll(io.LimitReader(s, 64*1024))
+		body = strings.TrimSpace(string(b))
+	}
+	if body == "" {
+		wish.Println(s, "empty message — nothing sent.")
+		_ = s.Exit(1)
+		return
+	}
+	if err := a.st.SendMessage(from.Name, recipient.Name, body); err != nil {
+		wish.Println(s, "could not send: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_, _ = a.st.RecordSession(from.ID, s.User(), remoteIP(s), "msg")
+	wish.Println(s, "✓ message left for "+recipient.Name+" — they'll see it in Members ▸ inbox.")
+	_ = s.Exit(0)
 }
 
 // handleFinger prints a classic finger card when someone ssh's to an
