@@ -19,21 +19,12 @@ import (
 
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/plugin"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cursorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
-	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e2e8f0"))
-	lockStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#38bdf8"))
-	motdStyle   = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#4ade80")).
-			Foreground(lipgloss.Color("252")).
-			Padding(0, 1)
-	frameStyle = lipgloss.NewStyle().Padding(1, 2)
+	theme       = ui.New(ui.Green)
+	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(ui.Cyan)
 )
 
 // SessionApp is a hub entry that takes over the terminal — a pod shell, the IRC
@@ -170,42 +161,37 @@ func (m Model) View() string {
 		b.WriteString(bannerStyle.Render(m.banner) + "\n\n")
 	}
 	who := fmt.Sprintf("%s (%s)", m.user.Name, m.user.Kind)
-	b.WriteString(titleStyle.Render("AgentBBS") + dimStyle.Render("  ·  "+who) + "\n")
+	b.WriteString(theme.Title("AgentBBS") + ui.Dim.Render("  ·  "+who) + "\n")
 	if m.motd != "" {
-		b.WriteString("\n" + motdStyle.Render(m.motd) + "\n")
+		b.WriteString("\n" + theme.Card("", m.motd) + "\n")
 	}
 	b.WriteString("\n")
 	row := 0
-	for _, p := range m.plugins {
-		label := p.Title()
-		if p.RequiresAuth() && m.user.Kind == auth.Guest {
-			label += lockStyle.Render("  [members]")
+	if len(m.plugins) > 0 {
+		b.WriteString(theme.Section("Features") + "\n")
+		for _, p := range m.plugins {
+			badge := ""
+			if p.RequiresAuth() && m.user.Kind == auth.Guest {
+				badge = ui.Badge(ui.BadgeMuted, "members")
+			}
+			b.WriteString(theme.MenuItem(row == m.cursor, p.Title(), badge, p.Description()))
+			row++
 		}
-		b.WriteString(m.renderRow(row, label, p.Description()))
-		row++
 	}
-	for _, app := range m.apps {
-		label := app.Title
-		if app.Locked != "" {
-			label += lockStyle.Render("  [locked]")
+	if len(m.apps) > 0 {
+		b.WriteString("\n" + theme.Section("Sessions") + "\n")
+		for _, app := range m.apps {
+			badge := ""
+			if app.Locked != "" {
+				badge = ui.Badge(ui.BadgeGold, "locked")
+			}
+			b.WriteString(theme.MenuItem(row == m.cursor, app.Title, badge, app.Description))
+			row++
 		}
-		b.WriteString(m.renderRow(row, label, app.Description))
-		row++
 	}
-	b.WriteString("\n" + dimStyle.Render("↑/↓ move · enter select · ctrl+c back · q quit"))
+	b.WriteString("\n" + ui.KeyBar("↑/↓ move · enter select · ctrl+c back · q quit"))
 	if m.note != "" {
-		b.WriteString("\n" + lockStyle.Render(m.note))
+		b.WriteString("\n" + ui.Danger.Render(m.note))
 	}
-	return frameStyle.Render(b.String())
-}
-
-// renderRow renders one menu line with the cursor and dimmed description. The
-// selected row's cursor and label are highlighted.
-func (m Model) renderRow(i int, label, desc string) string {
-	cur := "  "
-	if i == m.cursor {
-		cur = cursorStyle.Render("❯ ")
-		label = selStyle.Render(label)
-	}
-	return fmt.Sprintf("%s%s\n  %s\n", cur, label, dimStyle.Render(desc))
+	return ui.Frame.Render(b.String())
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/store"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 // Live is one connected SSH session, as seen by the registry.
@@ -70,13 +71,13 @@ var menuItems = []struct {
 }
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ade80"))
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ade80"))
-	headStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#60a5fa"))
-	frameStyle  = lipgloss.NewStyle().Padding(1, 2)
+	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(ui.Green)
+	dimStyle    = ui.Dim
+	cursorStyle = lipgloss.NewStyle().Bold(true).Foreground(ui.Green)
+	warnStyle   = ui.Danger
+	okStyle     = lipgloss.NewStyle().Foreground(ui.Green)
+	headStyle   = lipgloss.NewStyle().Bold(true).Foreground(ui.Blue)
+	frameStyle  = ui.Frame
 )
 
 // Model is the admin console.
@@ -306,7 +307,7 @@ func (m Model) View() string {
 	}
 
 	header := titleStyle.Render("AgentBBS admin") + dimStyle.Render("  ·  "+m.admin.Name)
-	out := header + "\n\n" + body + "\n" + dimStyle.Render(help)
+	out := header + "\n\n" + body + "\n" + ui.KeyBar(help)
 	if m.note != "" {
 		out += "\n" + m.note
 	}

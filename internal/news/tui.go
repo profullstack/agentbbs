@@ -8,15 +8,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/ssh"
 	"github.com/dustin/go-nntp"
+
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 var (
-	nTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#c084fc"))
-	nSel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#0b1020")).Background(lipgloss.Color("#38bdf8"))
-	nMeta  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	nFrom  = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ade80"))
-	nErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	nHint  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	theme = ui.New(ui.Purple)
+	nSel  = lipgloss.NewStyle().Foreground(lipgloss.Color("#0b1020")).Background(ui.Cyan)
+	nMeta = ui.Dim
+	nFrom = lipgloss.NewStyle().Foreground(ui.Green)
+	nErr  = ui.Danger
 )
 
 // RunReader connects the member to the loopback NNTP server and drives the
@@ -311,7 +312,7 @@ func (m *model) frame(header, body, hint string) string {
 		status = "\n" + nMeta.Render(m.status)
 	}
 	return lipgloss.NewStyle().Padding(0, 1).Render(
-		nTitle.Render(header) + "\n\n" + body + status + "\n\n" + nHint.Render(hint))
+		theme.Title(header) + "\n\n" + body + status + "\n\n" + ui.KeyBar(hint))
 }
 
 func (m *model) viewGroups() string {
