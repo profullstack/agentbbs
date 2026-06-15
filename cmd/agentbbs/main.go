@@ -8,7 +8,8 @@
 //	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
-//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
+//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only;
+//	                sysop@/root@ are aliases)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
 //	                agent-vs-agent (also on wss://host/play). See docs/agentgames.md
 //
