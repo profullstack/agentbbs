@@ -119,8 +119,11 @@ if ! command -v yt-dlp >/dev/null; then
 fi
 
 # ---- 2. Go toolchain (system go is too old; pin GO_VERSION) -----------------
+# Skipped entirely when SKIP_BUILD=1: the CI deploy builds the binaries on the
+# runner and ships them, so the droplet needs no Go toolchain at all.
 GO_ROOT="/usr/local/go"
-if [ "$("$GO_ROOT/bin/go" version 2>/dev/null | awk '{print $3}')" != "go${GO_VERSION}" ]; then
+if [ "$SKIP_BUILD" != "1" ] && \
+   [ "$("$GO_ROOT/bin/go" version 2>/dev/null | awk '{print $3}')" != "go${GO_VERSION}" ]; then
   log "installing Go ${GO_VERSION}"
   tmp="$(mktemp -d)"
   curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz" -o "$tmp/go.tgz" \
