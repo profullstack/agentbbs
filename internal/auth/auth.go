@@ -43,8 +43,9 @@ var DomainNames = map[string]bool{"domain": true, "domains": true}
 
 // AdminNames are usernames that route to the privileged admin console (PRD §6).
 // The route only opens for accounts whose name is in the operator allowlist
-// (see IsAdmin); the name itself confers nothing.
-var AdminNames = map[string]bool{"admin": true, "sysop": true}
+// (see IsAdmin); the name itself confers nothing — so "root" is just a familiar
+// alias here, not a backdoor.
+var AdminNames = map[string]bool{"admin": true, "sysop": true, "root": true}
 
 // TorURLNames route to the one-shot "fetch a URL over Tor" command (premium).
 var TorURLNames = map[string]bool{"tor-url": true}

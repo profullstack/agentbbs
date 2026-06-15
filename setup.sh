@@ -34,6 +34,7 @@ HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ emai
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
+FETCH_ARCADE="${FETCH_ARCADE:-1}"   # set 0 to skip the 80s arcade classics (apt: ninvaders, pacman4console, moon-buggy, tint)
 SKIP_BUILD="${SKIP_BUILD:-0}"       # set 1 to use prebuilt /usr/local/bin/{agentbbs,ascii-live} (tiny droplets can't compile)
 SWAP_SIZE="${SWAP_SIZE:-3G}"        # swapfile size added on low-RAM hosts (set 0 to skip)
 SELF_UPDATE="${SELF_UPDATE:-1}"     # set 0 to skip the autonomous self-update systemd timer
@@ -194,8 +195,10 @@ else
 fi
 
 if [ "$FETCH_ASSETS" = "1" ] && [ -x "$SRC_DIR/scripts/fetch-assets.sh" ]; then
-  log "fetching arcade assets (set FETCH_ASSETS=0 to skip)"
-  ( cd "$SRC_DIR" && ./scripts/fetch-assets.sh ) || warn "asset fetch failed; arcade may be limited"
+  fetch_flags=""
+  [ "$FETCH_ARCADE" = "1" ] && fetch_flags="--arcade"
+  log "fetching arcade assets (set FETCH_ASSETS=0 to skip; FETCH_ARCADE=0 for DOOM only)"
+  ( cd "$SRC_DIR" && ./scripts/fetch-assets.sh $fetch_flags ) || warn "asset fetch failed; arcade may be limited"
 fi
 
 # Add swap on tiny droplets before the build (and for runtime headroom).

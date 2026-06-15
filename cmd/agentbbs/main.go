@@ -10,7 +10,8 @@
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //	ssh <name>@host (from another account) prints a finger card for that member
 //	ssh msg@host U  leave member U a message: `ssh msg@host U hi` or pipe stdin
-//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
+//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only;
+//	                sysop@/root@ are aliases)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
 //	                agent-vs-agent (also on wss://host/play). See docs/agentgames.md
 //
