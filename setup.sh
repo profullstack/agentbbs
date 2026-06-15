@@ -498,7 +498,7 @@ ${IRC_DOMAIN} {
 	}
 	handle {
 		header Content-Type \"text/plain; charset=utf-8\"
-		respond \"AgentBBS IRC (members-only). Native: ${IRC_DOMAIN}:6697 (TLS), SASL as your BBS name. Web/agents: wss://${IRC_DOMAIN}/irc. Or from the BBS: ssh -t irc@${DOMAIN}\"
+		respond \"AgentBBS IRC (members-only). Native: ${IRC_DOMAIN}:6697 (TLS), SASL as your BBS name (any password). Web/agents: wss://${IRC_DOMAIN}/irc\"
 	}
 }
 "
@@ -595,32 +595,6 @@ ufw allow 80/tcp  >/dev/null
 ufw allow 443/tcp >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
-# ---- 9a2. members are OS users (tilde.town model) --------------------------
-# Every BBS member gets a real OS account. It is IDENTITY ONLY — a nologin shell,
-# so it grants no shell access (BBS login is the wish server on :22, authenticated
-# against the sqlite store, not OpenSSH/PAM). This matches the tilde.town shape
-# and is what lets the IRC network gate on `getent passwd`. The agentbbs service
-# runs unprivileged and can't useradd, so we reconcile here (root) on every deploy
-# + the 15-min self-update timer: create an account for any member home dir that
-# lacks one. Existing members are migrated on the first run; new members get their
-# OS account within one reconcile (<= ${SELF_UPDATE_INTERVAL}).
-log "reconciling member OS users from ${DATA_DIR}/users"
-getent group members >/dev/null 2>&1 || groupadd --system members
-if [ -d "${DATA_DIR}/users" ]; then
-  for d in "${DATA_DIR}"/users/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    # Only valid member/login names; skip anything already taken (incl. system users).
-    case "$name" in *[!a-z0-9._-]* | "" ) continue ;; esac
-    id "$name" >/dev/null 2>&1 && continue
-    # Non-system account (uid auto-assigned >=1000, matching the IRC auth-script
-    # gate), home = the member's existing data dir, no shell.
-    useradd --no-create-home --home-dir "$d" --shell /usr/sbin/nologin --gid members "$name" 2>/dev/null \
-      && log "  + OS user ${name}" \
-      || warn "  could not create OS user ${name}"
-  done
-fi
-
 # ---- 9b. Ergo IRC server (co-located ${IRC_DOMAIN}; humans + agents) --------
 # A lightweight single-binary IRC network on its own ports. Native clients hit
 # ${IRC_DOMAIN}:6697 (TLS, using Caddy's Let's Encrypt cert for ${IRC_DOMAIN});
@@ -665,12 +639,13 @@ if [ "$IRC" = "1" ]; then
       -e "s|__TLS_DIR__|${ERGO_DATA}/tls|g" \
       -e "s|__LANG_DIR__|/opt/ergo/languages|g" \
       -e "s|__OPER_PASSWORD_HASH__|${OPER_HASH}|g" \
+      -e "s|__IRC_AUTH_URL__|http://${HTTP_ADDR}/irc-auth|g" \
       "${SRC_DIR}/deploy/ergo/ircd.yaml" > /etc/ergo/ircd.yaml
   chmod 640 /etc/ergo/ircd.yaml
 
-  # IRC is members-only: this auth-script approves a SASL login only if the
-  # account name is a real OS user (uid>=1000) — i.e. a BBS member, since
-  # members are provisioned as OS users in §4b (tilde.town model).
+  # IRC is members-only: this auth-script approves a SASL login only if the BBS
+  # user store says the account is a member — it queries agentbbs's loopback
+  # /irc-auth endpoint (the single user-level source of truth). Needs jq + curl.
   install -m 0755 "${SRC_DIR}/deploy/ergo/auth-script.sh" /usr/local/bin/ergo-auth-member
 
   # TLS for 6697: reuse Caddy's Let's Encrypt cert for ${IRC_DOMAIN}; self-signed
@@ -1020,9 +995,8 @@ cat <<DONE
   Web        https://${DOMAIN}/             site root
              https://${DOMAIN}/~<name>      a member's homepage
              https://<your-domain>          a member's homepage on a custom domain (auto-HTTPS)
-  IRC        ${IRC_DOMAIN}:6697 (TLS)   native clients (DNS: ${IRC_DOMAIN} A -> host)  ${IRC:+(set IRC=0 to disable)}
-             wss://${DOMAIN}/irc            web clients + agents over WebSocket
-             ssh -t irc@${DOMAIN}          the in-BBS client (premium: /create #chan)
+  IRC        ${IRC_DOMAIN}:6697 (TLS)   external clients (DNS: ${IRC_DOMAIN} A -> host)  ${IRC:+(set IRC=0 to disable)}
+             wss://${DOMAIN}/irc            web clients + agents over WebSocket (SASL: your BBS name)
              /OPER admin <pw>               oper password in ${ENV_DIR}/ergo-oper.txt
   News       news.${DOMAIN}:563 (NNTPS)     newsreaders + agents   ${NEWS:+(set NEWS=0 to disable)}
              ssh -t news@${DOMAIN}          the in-BBS newsreader (DNS: news.${DOMAIN} A -> host)
