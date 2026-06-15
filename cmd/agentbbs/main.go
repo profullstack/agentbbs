@@ -70,6 +70,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/store"
 	"github.com/profullstack/agentbbs/internal/tor"
 	"github.com/profullstack/agentbbs/plugins/about"
+	"github.com/profullstack/agentbbs/plugins/files"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
 	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
@@ -171,7 +172,7 @@ func main() {
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}, files.Plugin{}}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
