@@ -3,11 +3,11 @@
 // reclaiming it when the plugin emits ExitMsg.
 //
 // Besides in-hub plugins, the hub also lists "session apps" — features that take
-// over the whole terminal (a pod shell, the IRC client, the newsreader, the mail
-// reader, Tor) rather than rendering inside the hub. Selecting one suspends the
+// over the whole terminal (a pod shell, the newsreader, the mail reader, or
+// Tor) rather than rendering inside the hub. Selecting one suspends the
 // hub via tea.Exec, runs it, and returns to the menu. This is what lets a member
 // reach everything from a single `ssh <name>@host` login instead of separate
-// `ssh pod@` / `ssh irc@` / `ssh news@` connections.
+// `ssh pod@` / `ssh news@` connections.
 package hub
 
 import (
@@ -27,8 +27,8 @@ var (
 	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11d2a"))
 )
 
-// SessionApp is a hub entry that takes over the terminal — a pod shell, the IRC
-// client, the newsreader, the mail reader, or Tor — instead of running as an
+// SessionApp is a hub entry that takes over the terminal — a pod shell, the
+// newsreader, the mail reader, or Tor — instead of running as an
 // in-hub model. Selecting it suspends the hub (tea.Exec), runs Cmd, then returns
 // to the menu.
 type SessionApp struct {

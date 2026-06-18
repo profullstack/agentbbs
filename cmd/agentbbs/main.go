@@ -421,7 +421,7 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 }
 
 // sessionExec adapts a func to tea.ExecCommand so the hub can run a
-// terminal-takeover feature (pod shell, IRC, news, mail, Tor) via tea.Exec and
+// terminal-takeover feature (pod shell, news, mail, Tor) via tea.Exec and
 // return to the menu afterwards. The feature reads and writes the ssh.Session
 // directly, so the stream hooks are no-ops.
 type sessionExec struct{ run func() error }
@@ -431,9 +431,9 @@ func (e sessionExec) SetStdin(io.Reader)  {}
 func (e sessionExec) SetStdout(io.Writer) {}
 func (e sessionExec) SetStderr(io.Writer) {}
 
-// sessionApps builds the hub's terminal-takeover entries (pod, IRC, news, Tor)
+// sessionApps builds the hub's terminal-takeover entries (pod, news, mail, Tor)
 // so a member reaches everything from one `ssh <name>@host` login instead of
-// separate `ssh pod@`/`irc@`/`news@`/`tor@` connections (which still work as
+// separate `ssh pod@`/`news@`/`tor@` connections (which still work as
 // aliases, mainly for bots). Each entry is gated by membership/verification/plan
 // and shown locked with a reason when unavailable.
 func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.SessionApp {
