@@ -207,12 +207,32 @@ func (m *menu) workDir(sub string) string {
 	return d
 }
 
+// gameEnv is the minimal environment handed to a sandboxed game. It does NOT
+// inherit the daemon's environment (which carries operator secrets like
+// COINPAY_API_KEY) — a third-party game binary has no business seeing those.
+// TERM comes from the client PTY so ncurses games (Space Invaders, Pac-Man,
+// Tetris, Moon Patrol) can open the terminal; without it initscr() fails with
+// "Error opening terminal" and the game exits before drawing a frame.
+func (m *menu) gameEnv(work string) []string {
+	term := m.ctx.Term
+	if term == "" {
+		term = "xterm-256color" // sane default if the client didn't request a PTY type
+	}
+	return []string{
+		"TERM=" + term,
+		"PATH=/usr/games:/usr/local/games:/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + work,
+		"LANG=C.UTF-8", // unicode box-drawing for the ncurses games
+	}
+}
+
 // launchDoom suspends the TUI and bridges the session to a sandboxed
 // doom-ascii on a real PTY. Savegames land in the per-user work dir.
 func (m *menu) launchDoom(wad string) tea.Cmd {
 	bin := doomBin(m.ctx)
 	work := m.workDir(filepath.Join("doom", strings.TrimSuffix(filepath.Base(wad), filepath.Ext(wad))))
 	cmd := m.ctx.Sandbox.Command(work, bin, "-iwad", wad)
+	cmd.Env = m.gameEnv(work)
 	return tea.Exec(newPtyExec(cmd, m.width, m.height), func(err error) tea.Msg {
 		return gameDoneMsg{name: "DOOM", err: err}
 	})
@@ -228,6 +248,7 @@ func (m *menu) launchExt(g extGame) tea.Cmd {
 	}
 	work := m.workDir(g.id)
 	cmd := m.ctx.Sandbox.Command(work, bin, g.args...)
+	cmd.Env = m.gameEnv(work)
 	return tea.Exec(newPtyExec(cmd, m.width, m.height), func(err error) tea.Msg {
 		return gameDoneMsg{name: g.label, err: err}
 	})
