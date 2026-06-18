@@ -406,6 +406,9 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	go func() { <-s.Context().Done(); _ = a.st.EndSession(sessID) }()
 
 	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets, Host: a.host}
+	if pty, _, ok := s.Pty(); ok {
+		ctx.Term = pty.Term // ncurses arcade games need the client's TERM
+	}
 	if u.Kind != auth.Guest {
 		ctx.DataDir = filepath.Join(a.dataDir, "users", u.Name)
 		_ = os.MkdirAll(filepath.Join(ctx.DataDir, "wads"), 0o755)

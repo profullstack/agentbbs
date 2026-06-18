@@ -25,6 +25,11 @@ type Context struct {
 	// Host is the BBS hostname (e.g. bbs.profullstack.com), for building
 	// member homepage URLs (https://Host/~name) and similar links.
 	Host string
+	// Term is the client PTY's terminal type (e.g. xterm-256color). Needed by
+	// sandboxed ncurses games (Space Invaders, Pac-Man, Tetris, Moon Patrol),
+	// which call initscr() and fail with "Error opening terminal" if TERM is
+	// unset — the systemd daemon environment has no TERM to inherit.
+	Term string
 }
 
 // Plugin is the only integration point between a feature and the hub.
