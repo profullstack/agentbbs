@@ -165,25 +165,37 @@ func (s *Server) Process(nc net.Conn) {
 	}
 }
 
-func parseRange(spec string) (low, high int64) {
+func parseRange(spec string) (low, high int64, ok bool) {
 	if spec == "" {
-		return 0, math.MaxInt64
+		return 0, math.MaxInt64, true
 	}
 	parts := strings.Split(spec, "-")
 	if len(parts) == 1 {
 		h, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			h = math.MaxInt64
-			return 0, h
+			return 0, 0, false
 		}
-		return h, h
+		return h, h, true
 	}
-	l, _ := strconv.ParseInt(parts[0], 10, 64)
-	h, err := strconv.ParseInt(parts[1], 10, 64)
+	if len(parts) != 2 || parts[0] == "" {
+		return 0, 0, false
+	}
+	l, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		h = math.MaxInt64
+		return 0, 0, false
 	}
-	return l, h
+	var h int64 = math.MaxInt64
+	if parts[1] != "" {
+		parsed, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		h = parsed
+	}
+	if h < l {
+		return 0, 0, false
+	}
+	return l, h, true
 }
 
 func handleOver(args []string, s *session, c *textproto.Conn) error {
@@ -194,7 +206,10 @@ func handleOver(args []string, s *session, c *textproto.Conn) error {
 	if len(args) > 0 {
 		spec = args[0]
 	}
-	from, to := parseRange(spec)
+	from, to, ok := parseRange(spec)
+	if !ok {
+		return ErrSyntax
+	}
 	articles, err := s.backend.GetArticles(s.group, from, to)
 	if err != nil {
 		return err
