@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -61,6 +62,19 @@ var youtubeHosts = map[string]bool{
 	"youtu.be":          true,
 }
 
+var blockedIPPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT / shared address space
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
+	netip.MustParsePrefix("2001:db8::/32"),   // documentation
+	netip.MustParsePrefix("2002::/16"),       // 6to4
+	netip.MustParsePrefix("64:ff9b::/96"),    // IPv4/IPv6 translation
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // locally scoped IPv4/IPv6 translation
+}
+
 // Classify decides how a raw URL is handled, and rejects anything that is not
 // http(s). It does not touch the network.
 func Classify(raw string) (Kind, error) {
@@ -87,16 +101,28 @@ func Classify(raw string) (Kind, error) {
 
 // isBlockedIP reports whether an address must not be dialed: loopback,
 // link-local (incl. the 169.254.169.254 cloud-metadata endpoint), private
-// (RFC1918 / fc00::/7), multicast, or unspecified.
+// (RFC1918 / fc00::/7), shared/reserved, multicast, or unspecified.
 func isBlockedIP(ip net.IP) bool {
-	return ip == nil ||
+	if ip == nil ||
 		ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
 		ip.IsMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsPrivate()
+		ip.IsPrivate() {
+		return true
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	for _, p := range blockedIPPrefixes {
+		if p.Contains(addr.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardURL validates scheme and resolves the host, rejecting any URL that

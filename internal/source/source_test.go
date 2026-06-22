@@ -47,8 +47,15 @@ func TestIsBlockedIP(t *testing.T) {
 		"172.16.3.4",      // private
 		"192.168.1.1",     // private
 		"169.254.169.254", // link-local / cloud metadata
+		"100.100.100.200", // shared space, commonly used by cloud metadata services
+		"198.18.0.1",      // benchmarking range
+		"192.0.2.10",      // TEST-NET-1
+		"198.51.100.10",   // TEST-NET-2
+		"203.0.113.10",    // TEST-NET-3
 		"fe80::1",         // link-local v6
 		"fc00::1",         // unique-local v6 (private)
+		"2001:db8::1",     // documentation v6
+		"2002::1",         // 6to4
 		"0.0.0.0",         // unspecified
 		"224.0.0.1",       // multicast
 	}
