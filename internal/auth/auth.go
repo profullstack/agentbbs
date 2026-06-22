@@ -128,7 +128,7 @@ func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
 		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
-		MsgNames[n] || systemReserved[n] {
+		MailNames[n] || GameNames[n] || MsgNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes

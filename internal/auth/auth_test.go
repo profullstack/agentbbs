@@ -57,6 +57,8 @@ func TestSanitizeUsername(t *testing.T) {
 		{"this-name-is-way-too-long-to-accept", "", false}, // >20 after... actually long
 		{"admin", "admin", false},                          // reserved (route/infra)
 		{"pod", "pod", false},                              // reserved route
+		{"game", "game", false},                            // reserved AgentGames route
+		{"games", "games", false},                          // reserved AgentGames route alias
 		{"video-7f3a", "video-7f3a", false},                // reserved call route
 		{"WWW", "www", false},                              // reserved infra label
 	}
@@ -74,7 +76,7 @@ func TestSanitizeUsername(t *testing.T) {
 }
 
 func TestIsReservedName(t *testing.T) {
-	for _, n := range []string{"admin", "bbs", "pod", "join", "domain", "agent", "www", "video", "video-abc", "ROOT"} {
+	for _, n := range []string{"admin", "bbs", "pod", "join", "domain", "game", "games", "mail", "agent", "www", "video", "video-abc", "ROOT"} {
 		if !IsReservedName(n) {
 			t.Errorf("IsReservedName(%q) = false, want true", n)
 		}
