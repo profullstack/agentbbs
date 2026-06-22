@@ -1,7 +1,7 @@
 // Package arcade is the flagship plugin (PRD §5.1): classic terminal games.
 // DOOM and the 80s arcade classics (Space Invaders, Pac-Man, Tetris, Moon
 // Patrol) run as sandboxed external binaries on a real PTY; built-in TUI games
-// (snake) feed the global leaderboards.
+// (snake, hangman) feed the global leaderboards.
 package arcade
 
 import (
@@ -19,10 +19,12 @@ import (
 
 type Plugin struct{}
 
-func (Plugin) ID() string          { return "arcade" }
-func (Plugin) Title() string       { return "Arcade" }
-func (Plugin) Description() string { return "DOOM, Space Invaders, Pac-Man, Tetris, snake & leaderboards" }
-func (Plugin) RequiresAuth() bool  { return false }
+func (Plugin) ID() string    { return "arcade" }
+func (Plugin) Title() string { return "Arcade" }
+func (Plugin) Description() string {
+	return "DOOM, Space Invaders, Pac-Man, Tetris, snake, hangman & leaderboards"
+}
+func (Plugin) RequiresAuth() bool { return false }
 
 func (Plugin) New(user auth.User, ctx plugin.Context) tea.Model {
 	return newMenu(user, ctx)
@@ -134,10 +136,28 @@ func newMenu(user auth.User, ctx plugin.Context) *menu {
 		},
 		entry{
 			section: "BUILT-IN",
-			label:   "Leaderboard",
-			desc:    "global top scores",
+			label:   "Hangman",
+			desc:    "built-in word game; high scores hit the global leaderboard",
 			run: func(m *menu) (tea.Model, tea.Cmd) {
-				m.child = newBoard(m.ctx)
+				m.child = newHangman(m.user, m.ctx)
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
+			label:   "Leaderboard — Snake",
+			desc:    "global top snake scores",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newBoard(m.ctx, "snake")
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
+			label:   "Leaderboard — Hangman",
+			desc:    "global top hangman scores",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newBoard(m.ctx, "hangman")
 				return m, m.child.Init()
 			},
 		},
