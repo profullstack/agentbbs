@@ -451,8 +451,13 @@ upsert_env() {  # KEY VALUE — skips when VALUE is empty
 }
 # CoinPay: API key (read by the coinpay CLI) + merchant/business id.
 # Point existing installs at the freshly built member pod image (fresh installs
-# get it from the env-file template below).
-upsert_env AGENTBBS_POD_IMAGE "$POD_IMAGE"
+# get it from the env-file template below). Only when we actually have the custom
+# image — a transient podman failure in the deploy's rootless context must never
+# downgrade a working install back to the base ubuntu (the daemon builds/uses the
+# image from its own session regardless).
+if [ "$POD_IMAGE" = "localhost/agentbbs-pod:latest" ]; then
+  upsert_env AGENTBBS_POD_IMAGE "$POD_IMAGE"
+fi
 upsert_env COINPAY_API_KEY "${COINPAY_API_KEY:-}"
 upsert_env AGENTBBS_COINPAY_MERCHANT_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
 upsert_env COINPAY_BUSINESS_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
