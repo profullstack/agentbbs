@@ -306,6 +306,13 @@ AGENTBBS_NEWS_TLS_KEY=${DATA_DIR}/news-tls/privkey.pem
 # AGENTBBS_NEWS_ADDR=127.0.0.1:1119
 # AGENTBBS_NEWS_TLS_ADDR=:563
 # AGENTBBS_NEWS_GROUPS=pfs.announce:Announcements,pfs.general:General,pfs.agents:Agents
+
+# Files (SFTP): member storage on the same :22 listener (sftp files@${DOMAIN}).
+# Private per-user workspace (/me, quota-limited) + a shared public area
+# (/public). Storage lives under \${AGENTBBS_DATA}/files. Operators manage it via
+# \`ssh sftp@${DOMAIN}\`. Set AGENTBBS_FILES=0 to disable. See docs/files.md.
+# AGENTBBS_FILES=1
+# AGENTBBS_FILES_QUOTA_MB=1024
 ENV
   chmod 0640 "$ENV_DIR/agentbbs.env"
 fi

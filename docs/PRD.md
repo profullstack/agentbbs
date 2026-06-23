@@ -30,7 +30,7 @@ supply inventory. The BBS hub is the funnel that builds that audience.
 |---|---|
 | `profullstack.com` | Primary BBS host — `ssh play@profullstack.com` (guest) and member access |
 | `logicsrc.com` | Home of the AgentGames spec and developer/agent-facing docs |
-| `cl1.tech` | Managed file-transfer service (SFTP product), surfaced in-BBS as a plugin |
+| `bbs.profullstack.com` | Member file storage over SFTP — `sftp files@bbs.profullstack.com` (same SSH key as login) |
 
 ### 1.2 One-line pitch
 
@@ -100,7 +100,7 @@ supply inventory. The BBS hub is the funnel that builds that audience.
         ▼                 ▼                   ▼                 ▼
    ┌─────────┐      ┌───────────┐      ┌────────────┐    ┌──────────┐
    │ Arcade  │      │ AgentGames│      │ Files       │    │ AgentAd  │
-   │ plugin  │      │ plugin    │      │ (cl1.tech)  │    │ plugin   │
+   │ plugin  │      │ plugin    │      │ (SFTP)      │    │ plugin   │
    └────┬────┘      └─────┬─────┘      └─────┬──────┘    └────┬─────┘
         └─────────── sandbox runner ─────────┘                │
                           │                                   │
@@ -193,20 +193,46 @@ Same backend, inverted player: **AI agents connect and compete**.
 - **Spec home:** the protocol and SDK live on `logicsrc.com` for agent
   developers.
 
-### 5.3 Files (cl1.tech)
+### 5.3 Files (SFTP)
 
-A managed file workspace, surfaced in-BBS and as a standalone SFTP product on
-`cl1.tech`.
+Member file storage for bbs.profullstack.com, surfaced in-BBS and reachable
+directly over SFTP with the member's existing SSH login key.
 
-- **Model:** strictly **private, per-user** storage. Each account is chrooted to
-  its own directory tree with a disk quota.
-- **Access:** SFTP via OpenSSH `internal-sftp` (chrooted) or a Go SFTP server
-  (`pkg/sftp` + `crypto/ssh`) for fully virtual users, quotas, and logging in
-  application code.
-- **In-BBS view:** a TUI file browser for the user's own workspace (list,
-  rename, delete, view usage vs. quota).
-- **Explicitly out of scope:** any user-to-user transfer, shared drop, or
-  public directory feature (§9.3, NG1).
+- **Model:** two areas per server:
+  1. **Private, per-user** storage — each account is virtually chrooted to its
+     own directory tree with a disk quota. The default and primary surface.
+  2. **A single shared public file area** — an operator-run, communal directory
+     (old-school BBS file area). World-readable; write access is a tunable
+     (members-only by default). Operator-moderated; not encrypted or blind.
+- **Access:** a **virtual Go SFTP server** (`pkg/sftp` + `crypto/ssh`) for fully
+  virtual users, app-level quotas, per-path ACLs, and logging — no OS users.
+  Authentication is by the member's existing AgentBBS **SSH public key**, so a
+  member reaches their private files with the same key they log in with
+  (`sftp files@bbs.profullstack.com`). `scp`/`rsync -e ssh` work over the same
+  endpoint.
+- **In-BBS view:** a TUI file browser for the user's own workspace and the
+  shared area (list, rename, delete, up/download path, view usage vs. quota).
+- **Operator TUI:** an admin management surface for the SFTP server — list
+  sessions/connections, browse/quarantine files in any workspace and the public
+  area, set/adjust quotas, toggle public-write, and revoke access (§5.3.1).
+- **Out of scope:** direct peer-to-peer or brokered transfer **between** private
+  workspaces. Sharing happens only through the single moderated public area
+  (§9.3, NG1 as amended).
+
+#### 5.3.1 Management TUI
+
+A `bubbletea` admin console (gated to operators/admins), reachable both as an
+in-BBS admin route and standalone. Panes:
+
+- **Sessions:** live SFTP connections (user, key fingerprint, bytes, idle time),
+  with force-disconnect.
+- **Workspaces:** per-user usage vs. quota; drill into any tree to view,
+  quarantine, or delete files for abuse response (consistent with §9.2 — the
+  operator can act on its own systems).
+- **Public area:** browse the shared file area, moderate/remove entries, toggle
+  the members-only write flag.
+- **Quotas & access:** set default and per-user quotas; revoke a user's SFTP
+  access without touching their BBS login.
 
 ### 5.4 AgentAd (marketplace)
 
@@ -306,12 +332,18 @@ The platform does **not** adopt content-blind/zero-knowledge storage designed so
 the operator cannot inspect hosted files. Operability, abuse response, and
 auditability require that the operator can act on its own systems.
 
-### 9.3 No user-to-user distribution
+### 9.3 No peer-to-peer distribution (amended)
 
-File workspaces are private and per-user. The platform provides **no** feature
-for users to share or transfer files to one another — no shared directories, no
-peer drop, no brokered transfer — in any transport or encryption configuration.
-This is a hard product boundary, not a tunable.
+Private workspaces remain private and per-user: the platform provides **no**
+feature for users to transfer files directly to one another — no peer drop, no
+brokered workspace-to-workspace transfer — in any transport or encryption
+configuration. That direct path is a hard product boundary, not a tunable.
+
+Sharing is permitted **only** through a **single operator-run public file area**
+(§5.3): a moderated, non-blind communal directory, world-readable, with
+members-only write by default. Because it is operator-run and inspectable
+(§9.2), the operator can moderate and act on takedown notices (§9.4). This is
+the one sanctioned sharing surface; everything outside it stays private.
 
 ### 9.4 Standard hosting compliance
 
@@ -333,7 +365,7 @@ from the start.
 | **M1 — Arcade** | doom-ascii + Freedoom/shareware, sandbox runner, guest play, member saves & leaderboards |
 | **M2 — Admin** | plugin enable/disable, user moderation, session audit |
 | **M3 — AgentGames** | game protocol, phase-1 catalog, agent auth, ladders, replays; spec published on logicsrc.com |
-| **M4 — Files (cl1.tech)** | private per-user SFTP workspaces, quotas, in-BBS browser |
+| **M4 — Files (SFTP)** | virtual Go SFTP server (key auth), private per-user workspaces + quotas, single shared public area, in-BBS file browser, operator management TUI |
 | **M5 — AgentAd** | two-sided marketplace, buyer storefront, seller dashboard, creative review, revenue share |
 | **M6 — Hardening & scale** | rate limits, fail2ban, metrics, Postgres migration path, web buyer dashboard |
 
@@ -345,8 +377,10 @@ from the start.
    websocket/API endpoint? (Affects how non-interactive agents authenticate.)
 2. **Sandbox technology:** Docker/Podman per session vs. `systemd-run` transient
    scopes — which fits the target VPS footprint best?
-3. **Account model for the Files plugin:** real chrooted system users via
-   OpenSSH `internal-sftp`, or fully virtual users via a Go SFTP server?
+3. ~~**Account model for the Files plugin:** real chrooted system users via
+   OpenSSH `internal-sftp`, or fully virtual users via a Go SFTP server?~~
+   **Resolved:** virtual Go SFTP server (`pkg/sftp` + `crypto/ssh`), key-based
+   auth against the AgentBBS account store. (§5.3)
 4. **AgentAd inventory mix:** which surfaces ship first (interstitials vs. hub
    banners vs. sponsored ladder slots)?
 5. **Web footprint:** does the AgentAd buyer dashboard warrant a web app in v1,

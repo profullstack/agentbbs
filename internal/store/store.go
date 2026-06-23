@@ -182,6 +182,23 @@ type Store interface {
 	// per-group number, and returns the stored row (with its number).
 	InsertNewsArticle(a NewsArticle) (NewsArticle, error)
 
+	// Files (SFTP) — per-user workspaces + the shared public area (docs/files.md).
+
+	// FilesAccess returns a user's SFTP access record (per-user quota override
+	// and revoked flag). A user with no row reports the zero value
+	// (QuotaBytes 0 = use the server default, Revoked false).
+	FilesAccess(userID int64) (FilesAccess, error)
+	// SetFilesQuota sets a per-user quota override in bytes (0 clears the
+	// override, falling back to the server default). Idempotent upsert.
+	SetFilesQuota(userID, bytes int64) error
+	// SetFilesRevoked revokes (or restores) a user's SFTP access without
+	// touching their BBS login. Idempotent upsert.
+	SetFilesRevoked(userID int64, revoked bool) error
+	// FilesSetting reads a Files service setting (e.g. the public-write mode).
+	FilesSetting(key string) (string, bool, error)
+	// SetFilesSetting writes a Files service setting. Idempotent upsert.
+	SetFilesSetting(key, value string) error
+
 	Close() error
 }
 
@@ -211,6 +228,14 @@ type NewsArticle struct {
 	Lines     int
 	Bytes     int
 	CreatedAt time.Time
+}
+
+// FilesAccess is a user's SFTP access record. QuotaBytes is a per-user override
+// (0 means "use the server default"); Revoked blocks SFTP without affecting the
+// BBS login.
+type FilesAccess struct {
+	QuotaBytes int64
+	Revoked    bool
 }
 
 // RatingRow is one ladder entry.
@@ -471,6 +496,16 @@ CREATE TABLE IF NOT EXISTS news_articles (
 );
 CREATE INDEX IF NOT EXISTS idx_news_articles_grp ON news_articles(grp, num);
 CREATE INDEX IF NOT EXISTS idx_news_articles_msgid ON news_articles(msg_id);
+CREATE TABLE IF NOT EXISTS files_access (
+  user_id INTEGER PRIMARY KEY,
+  quota_bytes INTEGER NOT NULL DEFAULT 0,
+  revoked INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS files_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
@@ -927,6 +962,67 @@ func (s *sqliteStore) RecordQryptInvite(username, jti string, quota int) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// --- Files (SFTP) ------------------------------------------------------------
+
+func (s *sqliteStore) FilesAccess(userID int64) (FilesAccess, error) {
+	var fa FilesAccess
+	var revoked int
+	err := s.db.QueryRow(
+		`SELECT quota_bytes, revoked FROM files_access WHERE user_id = ?`, userID,
+	).Scan(&fa.QuotaBytes, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FilesAccess{}, nil
+	}
+	if err != nil {
+		return FilesAccess{}, err
+	}
+	fa.Revoked = revoked != 0
+	return fa, nil
+}
+
+func (s *sqliteStore) SetFilesQuota(userID, bytes int64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO files_access (user_id, quota_bytes, updated_at)
+		VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT(user_id) DO UPDATE SET
+		  quota_bytes = excluded.quota_bytes,
+		  updated_at  = excluded.updated_at`, userID, bytes)
+	return err
+}
+
+func (s *sqliteStore) SetFilesRevoked(userID int64, revoked bool) error {
+	r := 0
+	if revoked {
+		r = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO files_access (user_id, revoked, updated_at)
+		VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT(user_id) DO UPDATE SET
+		  revoked    = excluded.revoked,
+		  updated_at = excluded.updated_at`, userID, r)
+	return err
+}
+
+func (s *sqliteStore) FilesSetting(key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM files_settings WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+func (s *sqliteStore) SetFilesSetting(key, value string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO files_settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
 }
 
 func (s *sqliteStore) Close() error { return s.db.Close() }
