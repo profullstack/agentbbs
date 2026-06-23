@@ -33,6 +33,9 @@ ASK_ADDR="${ASK_ADDR:-127.0.0.1:8081}"   # agentbbs on-demand-TLS ask endpoint (
 HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ email confirmation links)
 FILES_WEB_ADDR="${FILES_WEB_ADDR:-127.0.0.1:8092}" # agentbbs web file browser (Caddy fronts files.${DOMAIN#*.})
 FILES_DOMAIN="${FILES_DOMAIN:-files.${DOMAIN#*.}}"  # web file browser host (default: files.<root-of-DOMAIN>)
+CHAT="${CHAT:-1}"                   # set 0 to drop the chat.<root> Caddy route to The Lounge web IRC client
+CHAT_DOMAIN="${CHAT_DOMAIN:-chat.${DOMAIN#*.}}"   # The Lounge web IRC host (default: chat.<root-of-DOMAIN>)
+CHAT_ADDR="${CHAT_ADDR:-127.0.0.1:9000}"          # The Lounge loopback (the thelounge docker container publishes this)
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
@@ -700,6 +703,21 @@ ${FILES_DOMAIN} {
 }
 "
 
+# Web IRC client (${CHAT_DOMAIN}): Caddy fronts The Lounge, which runs as a
+# separately-provisioned docker container (thelounge/thelounge) publishing
+# ${CHAT_ADDR}. setup.sh does NOT manage the container — only this route, so a
+# deploy that regenerates the Caddyfile no longer drops chat (it used to). Needs
+# A record ${CHAT_DOMAIN} -> this host. Returns 502 if the container isn't up.
+CHAT_SITE=""
+if [ "$CHAT" = "1" ]; then
+  CHAT_SITE="
+${CHAT_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy ${CHAT_ADDR}
+}
+"
+fi
+
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -743,7 +761,7 @@ ${DOMAIN} {
 		file_server
 	}
 }
-${GIT_SITE}${NEWS_SITE}${IRC_SITE}${MAIL_SITE}${FILES_SITE}
+${GIT_SITE}${NEWS_SITE}${IRC_SITE}${MAIL_SITE}${FILES_SITE}${CHAT_SITE}
 # Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
 # *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
 # ask endpoint confirms <name> is a registered member, so random subdomains
