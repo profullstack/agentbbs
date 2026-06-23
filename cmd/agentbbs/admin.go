@@ -13,6 +13,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/admin"
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/calls"
+	"github.com/profullstack/agentbbs/internal/files"
 	"github.com/profullstack/agentbbs/internal/plugin"
 )
 
@@ -153,6 +154,32 @@ func (a *app) adminTeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	}
 	m := admin.New(u, a.st, a.live, a.live.idFor(s), env)
 	return m, []tea.ProgramOption{tea.WithAltScreen()}
+}
+
+// filesAdminTeaHandler launches the SFTP server management TUI. Like admin@ it
+// is gated by the operator allowlist and re-checked here so a direct hit is
+// safe. Members transfer files via the sftp subsystem, not this route.
+func (a *app) filesAdminTeaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+	if a.files == nil {
+		wish.Println(s, "the Files service is disabled (AGENTBBS_FILES=0).")
+		_ = s.Exit(1)
+		return nil, nil
+	}
+	fp := auth.Fingerprint(s.PublicKey())
+	var name string
+	if fp != "" {
+		if u, found, _ := a.st.UserByFingerprint(fp); found {
+			name = u.Name
+		}
+	}
+	if name == "" || !auth.IsAdmin(name) {
+		wish.Println(s, "the SFTP management console is restricted to operators.")
+		_ = s.Exit(1)
+		return nil, nil
+	}
+	sessID, _ := a.st.RecordSession(0, s.User(), remoteIP(s), "sftp-admin")
+	go func() { <-s.Context().Done(); _ = a.st.EndSession(sessID) }()
+	return files.NewAdminModel(a.files), []tea.ProgramOption{tea.WithAltScreen()}
 }
 
 func sortedKeys(m map[string]bool) []string {

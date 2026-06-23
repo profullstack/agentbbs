@@ -59,6 +59,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/brand"
 	"github.com/profullstack/agentbbs/internal/calls"
 	"github.com/profullstack/agentbbs/internal/chat"
+	"github.com/profullstack/agentbbs/internal/files"
 	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
@@ -111,6 +112,7 @@ type app struct {
 	webmailURL string            // webmail (Roundcube) URL shown to members
 	forgejo    forgejo.Config    // AgentGit git.profullstack.com account provisioning
 	live       *liveReg          // in-memory live-session registry (admin console)
+	files      *files.Service    // SFTP file storage (nil when AGENTBBS_FILES=0)
 	gamesReg   *games.Registry   // AgentGames catalog
 	mm         *games.Matchmaker // AgentGames matchmaker (agent-vs-agent)
 	dataDir    string
@@ -187,6 +189,22 @@ func main() {
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
 	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), members.Plugin{}, qryptinviteplugin.Plugin{}, about.Plugin{}, hello.Plugin{}}
+
+	// Files (SFTP): per-user workspaces + a shared public area, reached over the
+	// :22 listener via `sftp files@<host>` (docs/files.md). Disable with
+	// AGENTBBS_FILES=0. The in-BBS browser is a hub plugin; the operator
+	// management TUI is the sftp@ route.
+	if env("AGENTBBS_FILES", "1") == "1" {
+		fsvc, err := files.New(a.st, files.Config{
+			Root:         filepath.Join(dataDir, "files"),
+			DefaultQuota: int64(envInt("AGENTBBS_FILES_QUOTA_MB", 1024)) << 20,
+		})
+		if err != nil {
+			log.Fatal("files", "err", err)
+		}
+		a.files = fsvc
+		a.registry = append(a.registry, files.NewPlugin(fsvc))
+	}
 
 	// Custom domains: maintain the symlink farm Caddy serves and answer its
 	// on-demand-TLS "ask" query so certs are only issued for mapped domains.
@@ -265,7 +283,7 @@ func main() {
 	}
 
 	addr := env("AGENTBBS_ADDR", ":2222")
-	srv, err := wish.NewServer(
+	opts := []ssh.Option{
 		wish.WithAddress(addr),
 		wish.WithHostKeyPath(filepath.Join(dataDir, "ssh", "host_ed25519")),
 		// Keys are always accepted at the transport layer; identity and
@@ -273,13 +291,19 @@ func main() {
 		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool { return true }),
 		// Keyless interactive auth admits guests (bbs@/play@) only.
 		wish.WithKeyboardInteractiveAuth(func(ctx ssh.Context, _ gossh.KeyboardInteractiveChallenge) bool { return true }),
-		wish.WithIdleTimeout(30*time.Minute),
+		wish.WithIdleTimeout(30 * time.Minute),
 		wish.WithMiddleware(
 			a.router(),
 			a.track(), // register every session for the admin console
 			logging.Middleware(),
 		),
-	)
+	}
+	// SFTP rides the same :22 listener as a subsystem; identity is the SSH key,
+	// so `sftp files@<host>` works with the member's login key.
+	if a.files != nil {
+		opts = append(opts, wish.WithSubsystem("sftp", a.files.Subsystem()))
+	}
+	srv, err := wish.NewServer(opts...)
 	if err != nil {
 		log.Fatal("server", "err", err)
 	}
@@ -306,9 +330,11 @@ func main() {
 func (a *app) router() wish.Middleware {
 	btMw := bm.Middleware(a.teaHandler)
 	adminMw := bm.Middleware(a.adminTeaHandler)
+	filesAdminMw := bm.Middleware(a.filesAdminTeaHandler)
 	return func(next ssh.Handler) ssh.Handler {
 		hubHandler := activeterm.Middleware()(btMw(next))
 		adminHandler := activeterm.Middleware()(adminMw(next))
+		filesAdminHandler := activeterm.Middleware()(filesAdminMw(next))
 		return func(s ssh.Session) {
 			user := strings.ToLower(s.User())
 			code, isVideo := calls.RouteCode(user)
@@ -333,6 +359,8 @@ func (a *app) router() wish.Middleware {
 				a.handleNews(s)
 			case auth.IsMailName(user):
 				a.handleMail(s)
+			case auth.IsFilesAdminName(user):
+				filesAdminHandler(s)
 			case auth.IsMsgName(user):
 				a.handleMsg(s)
 			case isVideo:
@@ -1017,6 +1045,21 @@ func (a *app) provisionGit(u *store.User, pubKey string) {
 			log.Info("registered git ssh key", "user", u.Name)
 		}
 	}
+}
+
+// gitWelcomeEmailBody is the plain-text email sent by the notify-creds ops
+// command when a member's AgentGit (Forgejo) account is created or reset: web
+// login link, username, and the one-time password to change on first sign-in.
+func gitWelcomeEmailBody(name, password, loginURL string) string {
+	return "Hi " + name + ",\n\n" +
+		"Your git account is ready. Sign in to the web interface here:\n\n" +
+		"    " + loginURL + "\n\n" +
+		"    username:  " + name + "\n" +
+		"    password:  " + password + "\n\n" +
+		"You'll be asked to set a new password the first time you sign in.\n" +
+		"After that, click the \"+\" (top right) → \"New Repository\" to create repos.\n\n" +
+		"Pushing over git uses your registered SSH key — no password needed.\n\n" +
+		"If you didn't request this, you can ignore this email.\n"
 }
 
 // authorizedKey renders the session's public key as a single authorized_keys

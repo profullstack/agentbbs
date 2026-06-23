@@ -85,3 +85,24 @@ func TestIsReservedName(t *testing.T) {
 		}
 	}
 }
+
+func TestIsFilesAdminName(t *testing.T) {
+	for _, name := range []string{"sftp", "SFTP", "sftpadmin", "filesadmin"} {
+		if !IsFilesAdminName(name) {
+			t.Errorf("IsFilesAdminName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"files", "bbs", "anthony", ""} {
+		if IsFilesAdminName(name) {
+			t.Errorf("IsFilesAdminName(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestFilesAdminNamesReserved(t *testing.T) {
+	for _, name := range []string{"sftp", "sftpadmin", "filesadmin", "mail"} {
+		if !IsReservedName(name) {
+			t.Errorf("IsReservedName(%q) = false, want true (route name)", name)
+		}
+	}
+}

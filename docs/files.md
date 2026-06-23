@@ -1,0 +1,109 @@
+# Files (SFTP) — member storage
+
+AgentBBS gives every verified member file storage over **SFTP**, reachable with
+the same SSH key they log in with. It rides the existing `:22` listener as an
+SSH *subsystem*, so there is no new port and no separate account:
+
+```bash
+# interactive
+sftp files@bbs.profullstack.com
+
+# one-shot copies (same endpoint, same key)
+scp report.pdf files@bbs.profullstack.com:/me/
+rsync -avz ./site/ -e ssh files@bbs.profullstack.com:/me/site/
+```
+
+The username (`files`) is conventional and ignored — **identity is your SSH
+key** (one key = one account, like the rest of the BBS). `scp`/`rsync` work
+because they tunnel over the same SSH transport.
+
+## Who can use it
+
+**Members only — but free for every member.** Like IRC and News, file storage is
+gated on membership, *not* on the paid Founding Lifetime plan:
+
+- **Non-members can't connect.** A key that isn't a registered account is
+  refused at the SFTP handshake (`this key isn't a member — register first`), and
+  guests don't see the in-hub Files browser.
+- **Every verified member can connect, run, and join** — free and paid alike.
+  There is no Premium gate anywhere in the Files path; the plan only affects
+  unrelated perks (custom email, domains, Tor).
+- Operators can revoke an individual account's SFTP access (abuse response)
+  without touching its BBS login — see the management TUI below.
+
+## Two areas
+
+When you connect you see a virtual root with two directories:
+
+| Path | What it is | Access |
+|---|---|---|
+| `/me` | Your **private** per-user workspace | read/write, quota-limited |
+| `/public` | The single **shared public file area** (old-school BBS file area) | world-read; members-only write by default |
+
+There is **no** path from one member's `/me` to another's — the only sharing
+surface is the one public area (PRD §9.3, amended). Both areas are confined: a
+path that tries to escape its root (`../`, an absolute path, or a planted
+symlink) is rejected.
+
+## Quotas
+
+Each private workspace has a byte quota (default **1 GiB**, set by
+`AGENTBBS_FILES_QUOTA_MB`). Writes that would exceed it fail. Operators can set a
+per-user override in the management TUI. The public area is operator-managed and
+not metered per user.
+
+## In-BBS browser
+
+Inside the hub, the **Files** entry opens a TUI browser for your workspace and
+the public area: navigate, view text files, make directories, rename, and
+delete, with a live usage gauge. Actual transfers happen over SFTP/scp/rsync (a
+PTY can't move file bytes).
+
+## Operator management TUI
+
+Operators (the `$AGENTBBS_ADMINS` allowlist) reach the SFTP management console
+with:
+
+```bash
+ssh sftp@bbs.profullstack.com      # aliases: sftpadmin@, filesadmin@
+```
+
+Panes (Tab to switch):
+
+- **Sessions** — live SFTP connections (user, remote, rx/tx, idle); `x`
+  force-disconnects.
+- **Workspaces** — every member's usage vs. quota; `Q` sets a per-user quota,
+  `x` revokes/restores SFTP access (the BBS login is unaffected).
+- **Public area** — `t` toggles members' write access; `x` removes an entry
+  (moderation).
+
+Per PRD §9.2 the operator can inspect and act on hosted files; storage is not
+content-blind.
+
+## Configuration
+
+| Var | Default | Meaning |
+|---|---|---|
+| `AGENTBBS_FILES` | `1` | enable the SFTP subsystem + Files plugin (`0` disables) |
+| `AGENTBBS_FILES_QUOTA_MB` | `1024` | default per-user workspace quota (MB) |
+| `AGENTBBS_DATA` | `./data` | storage lives under `<data>/files/{users,public}` |
+
+## Implementation
+
+- `internal/files` — a fully virtual Go SFTP server (`github.com/pkg/sftp` +
+  `crypto/ssh`); no OS users.
+  - `backend.go` — service, layout, quota/usage, live-session registry, operator
+    surface.
+  - `fs.go` — per-session virtual filesystem: `resolve()` is the single security
+    chokepoint (area confinement + symlink-escape guard) and the pkg/sftp
+    request handlers.
+  - `server.go` — the `wish.WithSubsystem("sftp", …)` handler: key auth → member
+    session → request server, with byte metering and force-disconnect.
+  - `tui.go` — the in-BBS member browser plugin.
+  - `admin.go` — the operator management TUI.
+- Storage: `files_access` (per-user quota override + revoked flag) and
+  `files_settings` (e.g. public-write mode) in the shared SQLite store.
+
+Security is covered by `internal/files/*_test.go`: path-traversal/confinement,
+symlink-escape rejection, the public-write ACL, quota enforcement, and an
+end-to-end run against a real SFTP client.

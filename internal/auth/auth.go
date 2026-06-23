@@ -70,6 +70,11 @@ var NewsNames = map[string]bool{"news": true}
 // an interactive TUI with a PTY, or a JSON bot mode with a command/no PTY.
 var MailNames = map[string]bool{"mail": true}
 
+// FilesAdminNames route an operator into the SFTP server management TUI. Members
+// transfer files via the "sftp" subsystem (sftp files@<host>); this interactive
+// route is the operator console and is gated by the admin allowlist.
+var FilesAdminNames = map[string]bool{"sftp": true, "sftpadmin": true, "filesadmin": true}
+
 // GameNames are usernames that route to AgentGames: the line-delimited-JSON
 // agent-vs-agent match protocol (PRD §5.2). `play@` stays a guest hub alias.
 var GameNames = map[string]bool{"game": true, "games": true}
@@ -104,6 +109,10 @@ func IsNewsName(u string) bool { return NewsNames[strings.ToLower(u)] }
 // IsMailName reports whether the SSH username requests the AgentMail client.
 func IsMailName(u string) bool { return MailNames[strings.ToLower(u)] }
 
+// IsFilesAdminName reports whether the SSH username requests the SFTP server
+// management TUI (operator-gated).
+func IsFilesAdminName(u string) bool { return FilesAdminNames[strings.ToLower(u)] }
+
 // MsgNames route a member-to-member message: `ssh msg@host <user>` leaves a
 // note in the recipient's BBS inbox (store-and-forward, see the Members plugin).
 var MsgNames = map[string]bool{"msg": true, "message": true}
@@ -128,7 +137,7 @@ func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
 		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
-		MsgNames[n] || GameNames[n] || systemReserved[n] {
+		MailNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes
