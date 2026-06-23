@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func seeded() *MemoryTransport {
@@ -129,6 +131,66 @@ func TestSendAndReply(t *testing.T) {
 	}
 	if re.Subject != "Re: Welcome" || re.To[0].Address != "carol@example.com" {
 		t.Fatalf("reply: %+v", sent)
+	}
+}
+
+func TestComposeTUISend(t *testing.T) {
+	tr := seeded()
+	c := paidClient(tr)
+	var m tea.Model = readerModel{c: c, ctx: context.Background(), mailbox: Inbox}
+
+	key := func(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
+	typeStr := func(s string) {
+		for _, r := range s {
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+	}
+
+	typeStr("c") // open compose from the list
+	if m.(readerModel).mode != modeCompose {
+		t.Fatalf("expected compose mode, got %v", m.(readerModel).mode)
+	}
+	typeStr("bob@example.com")
+	m, _ = m.Update(key(tea.KeyEnter)) // To -> Cc
+	m, _ = m.Update(key(tea.KeyEnter)) // Cc -> Subject
+	typeStr("Hello")
+	m, _ = m.Update(key(tea.KeyTab)) // Subject -> Body
+	typeStr("first line")
+	m, _ = m.Update(key(tea.KeyEnter)) // newline in body
+	typeStr("second line")
+
+	_, cmd := m.Update(key(tea.KeyCtrlD)) // send
+	if cmd == nil {
+		t.Fatal("ctrl+d produced no command")
+	}
+	if _, ok := cmd().(sentMsg); !ok {
+		t.Fatalf("expected sentMsg, got %T", cmd())
+	}
+	sent, _ := tr.ListMessages(context.Background(), ListOptions{Mailbox: Sent})
+	if len(sent) != 1 {
+		t.Fatalf("want 1 sent, got %d", len(sent))
+	}
+	if sent[0].To[0].Address != "bob@example.com" || sent[0].Subject != "Hello" {
+		t.Fatalf("bad draft: %+v", sent[0])
+	}
+}
+
+func TestComposeReplyPrefill(t *testing.T) {
+	tr := seeded()
+	c := paidClient(tr)
+	m := readerModel{c: c, ctx: context.Background(), mailbox: Inbox}
+	orig, _, _ := c.Read(context.Background(), Inbox, 1, true)
+	m.current = orig
+	m.mode = modeMessage
+	m.startReply(false)
+	if m.mode != modeCompose {
+		t.Fatal("reply did not enter compose mode")
+	}
+	if m.compose.to != "carol@example.com" || m.compose.subject != "Re: Welcome" {
+		t.Fatalf("reply prefill wrong: to=%q subject=%q", m.compose.to, m.compose.subject)
+	}
+	if m.compose.inReplyTo == "" || m.compose.focus != 3 {
+		t.Fatalf("reply threading/focus wrong: %+v", m.compose)
 	}
 }
 
