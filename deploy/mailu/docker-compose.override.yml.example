@@ -1,0 +1,14 @@
+# docker-compose.override.yml — copy to docker-compose.override.yml (gitignored).
+#
+# The base docker-compose.yml does not declare a network, so Docker would assign
+# the project's default bridge an arbitrary subnet. Mailu trusts SUBNET (from
+# mailu.env) as its internal network for service-to-service auth and relaying, so
+# the real network subnet MUST equal SUBNET or internal auth/relay breaks. This
+# override pins the default network to the same subnet you set as SUBNET in
+# mailu.env (default 192.168.203.0/24). Compose loads this file automatically.
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.203.0/24

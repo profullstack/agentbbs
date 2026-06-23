@@ -73,9 +73,9 @@ import (
 	"github.com/profullstack/agentbbs/internal/store"
 	"github.com/profullstack/agentbbs/internal/tor"
 	"github.com/profullstack/agentbbs/plugins/about"
-	"github.com/profullstack/agentbbs/plugins/hello"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	"github.com/profullstack/agentbbs/plugins/hello"
 	"github.com/profullstack/agentbbs/plugins/members"
 	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
@@ -1339,14 +1339,16 @@ func (a *app) ensureMailbox(u store.User) error {
 
 // mailClientFor builds an AgentMail client for a member, connecting to the
 // self-hosted Mailu backend. IMAP uses Dovecot master-user auth (login
-// "<name>*<master>") so the BBS gateway can open any member's mailbox with one
+// "<addr>*<master>") so the BBS gateway can open any member's mailbox with one
 // secret; SMTP defaults to the co-located relay (no auth). The client stamps
 // outgoing mail with the member's <name>@<mailDomain> address. Returns an error
 // if the IMAP connection/login fails.
 func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
-	login := su.Name
+	// Mailu keys mailboxes by full address, so the IMAP login (and the master
+	// login "<addr>*<master>") must use the address, not the bare handle.
+	login := a.mailAddress(su.Name)
 	if master := os.Getenv("AGENTBBS_MAIL_MASTER_USER"); master != "" {
-		login = su.Name + "*" + master
+		login = a.mailAddress(su.Name) + "*" + master
 	}
 	cfg := mailbox.IMAPConfig{
 		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", a.mailHost+":993"),
