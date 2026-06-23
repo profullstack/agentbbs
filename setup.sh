@@ -396,6 +396,13 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 # AGENTBBS_MAIL_API_TOKEN=<mailu API_TOKEN>
 # AGENTBBS_MAIL_QUOTA_BYTES=1073741824            # 1 GiB per mailbox
 # AGENTBBS_WEBMAIL_URL=https://${MAIL_DOMAIN}      # Roundcube (defaults to mail host)
+# The in-BBS mail reader opens mailboxes via a Dovecot master user, reaching
+# Dovecot directly over loopback (plaintext, on-host) to bypass Mailu's front
+# auth proxy. §9e sets these; the master pass is a secret (see docs/mail.md):
+# AGENTBBS_MAIL_IMAP_ADDR=127.0.0.1:14143
+# AGENTBBS_MAIL_IMAP_PLAINTEXT=1
+# AGENTBBS_MAIL_MASTER_USER=gateway
+# AGENTBBS_MAIL_MASTER_PASS=<gateway master password>
 
 # AgentGit (git.profullstack.com): every verified member — free and paid alike —
 # is provisioned a Forgejo account when they confirm their email. The admin token
@@ -1078,7 +1085,12 @@ if [ "$MAIL" = "1" ]; then
   # API token are secrets the operator sets; see docs/mail.md).
   upsert_env AGENTBBS_MAIL_DOMAIN "${MAIL_DOMAIN}"
   upsert_env AGENTBBS_MAIL_ADDR_DOMAIN "${DOMAIN}"
-  upsert_env AGENTBBS_MAIL_IMAP_ADDR "${MAIL_DOMAIN}:993"
+  # The gateway reads Dovecot DIRECTLY over loopback (docker-compose.override.yml
+  # publishes it on 127.0.0.1:14143), bypassing Mailu's front nginx auth proxy so
+  # the master-user login works. Plaintext is safe — it never leaves the host.
+  # See docs/mail.md ("Why the gateway talks to Dovecot directly").
+  upsert_env AGENTBBS_MAIL_IMAP_ADDR "127.0.0.1:14143"
+  upsert_env AGENTBBS_MAIL_IMAP_PLAINTEXT "1"
   upsert_env AGENTBBS_MAIL_SMTP_ADDR "127.0.0.1:25"
 
   # Cert refresher: copy Caddy's mail cert into Mailu on renewal (like news/IRC).
