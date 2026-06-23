@@ -21,6 +21,8 @@
 //	agentbbs mint-token NAME             issue a WebSocket API token for NAME
 //	agentbbs qrypt-invite NAME           mint a qrypt.chat anonymous invite for NAME
 //	agentbbs qrypt-issuer-keygen         print a fresh qrypt issuer seed + public key
+//	agentbbs notify-creds [flags]        (re)email verified members their git +
+//	                                     mailbox creds/links (preview unless --send)
 package main
 
 import (
@@ -144,6 +146,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-invite" {
 		qryptInviteCmd(st, os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "notify-creds" {
+		notifyCreds(st, os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
@@ -823,13 +829,34 @@ func (a *app) ensurePremium(u *store.User) bool {
 		return false
 	}
 	u.Premium = true
-	// Create their <name>@host alias forwarding to the email they verified.
+	// Create their <name>@host alias forwarding to the email they verified, then
+	// email that address their new mailbox details + webmail link.
 	if a.fe.Configured() && u.Email != "" {
 		if err := a.fe.CreateAlias(u.Name, u.Email); err != nil {
 			log.Error("forwardemail alias", "err", err, "alias", a.fe.Address(u.Name))
+		} else if a.mail.Configured() {
+			if err := a.mail.Send(u.Email, "Your "+a.fe.Domain+" mailbox is ready",
+				mailWelcomeEmailBody(u.Name, a.fe.Address(u.Name), a.fe.WebmailURL())); err != nil {
+				log.Error("mail welcome email", "user", u.Name, "err", err)
+			}
 		}
 	}
 	return true
+}
+
+// mailWelcomeEmailBody is the plain-text email sent when a member's @host
+// mailbox alias is provisioned: their new address and the webmail link.
+func mailWelcomeEmailBody(name, address, webmail string) string {
+	b := "Hi " + name + ",\n\n" +
+		"Your member mailbox is live:\n\n" +
+		"    " + address + "\n\n" +
+		"Mail sent there forwards to this address.\n"
+	if webmail != "" {
+		b += "\nRead and send from the webmail interface here:\n\n" +
+			"    " + webmail + "\n"
+	}
+	b += "\nIf you didn't request this, you can ignore this email.\n"
+	return b
 }
 
 // showPremiumWelcome prints a premium member's perks: their mailbox, the webmail
@@ -982,14 +1009,39 @@ func (a *app) provisionGit(u *store.User) {
 	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
 		return
 	}
-	created, err := a.forgejo.EnsureUser(u.Name, u.Email)
+	created, password, err := a.forgejo.EnsureUser(u.Name, u.Email)
 	if err != nil {
 		log.Error("forgejo provision", "user", u.Name, "err", err)
 		return
 	}
-	if created {
-		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	if !created {
+		return
 	}
+	log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	// Email the verified address their web sign-in link + one-time password so
+	// they can log in to the Forgejo UI and create repositories. Best-effort:
+	// the account already exists, so a mail failure must not block anything.
+	if a.mail.Configured() {
+		if err := a.mail.Send(u.Email, "Your git.profullstack.com account is ready",
+			gitWelcomeEmailBody(u.Name, password, a.forgejo.LoginURL())); err != nil {
+			log.Error("git welcome email", "user", u.Name, "err", err)
+		}
+	}
+}
+
+// gitWelcomeEmailBody is the plain-text email sent when a member's AgentGit
+// (Forgejo) account is created: web login link, username, and the one-time
+// password they must change on first sign-in.
+func gitWelcomeEmailBody(name, password, loginURL string) string {
+	return "Hi " + name + ",\n\n" +
+		"Your git account is ready. Sign in to the web interface here:\n\n" +
+		"    " + loginURL + "\n\n" +
+		"    username:  " + name + "\n" +
+		"    password:  " + password + "\n\n" +
+		"You'll be asked to set a new password the first time you sign in.\n" +
+		"After that, click the \"+\" (top right) → \"New Repository\" to create repos.\n\n" +
+		"Pushing over git uses your registered SSH key — no password needed.\n\n" +
+		"If you didn't request this, you can ignore this email.\n"
 }
 
 // verifyPage renders the minimal confirmation result page.

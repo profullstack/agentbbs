@@ -20,7 +20,7 @@ func TestConfiguredRequiresURLAndToken(t *testing.T) {
 }
 
 func TestEnsureUserNoOpWhenUnconfigured(t *testing.T) {
-	if _, err := (Config{}).EnsureUser("alice", "a@x.com"); err == nil {
+	if _, _, err := (Config{}).EnsureUser("alice", "a@x.com"); err == nil {
 		t.Fatal("expected error when unconfigured")
 	}
 }
@@ -52,12 +52,18 @@ func TestEnsureUserCreatesWhenMissing(t *testing.T) {
 	defer srv.Close()
 
 	c := Config{BaseURL: srv.URL, Token: "secret"}
-	created, err := c.EnsureUser("alice", "a@x.com")
+	created, password, err := c.EnsureUser("alice", "a@x.com")
 	if err != nil {
 		t.Fatalf("EnsureUser: %v", err)
 	}
 	if !created {
 		t.Fatal("expected created=true")
+	}
+	if password == "" {
+		t.Fatal("expected a generated temporary password for a new account")
+	}
+	if password != got.body["password"] {
+		t.Errorf("returned password %q does not match the one sent to forgejo %v", password, got.body["password"])
 	}
 	if !got.lookup || !got.create {
 		t.Fatalf("expected lookup+create, got %+v", got)
@@ -67,6 +73,78 @@ func TestEnsureUserCreatesWhenMissing(t *testing.T) {
 	}
 	if got.body["username"] != "alice" {
 		t.Errorf("expected username alice, got %v", got.body["username"])
+	}
+}
+
+func TestEnsureUserResetCreatesWhenMissing(t *testing.T) {
+	var posted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users/alice":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/users":
+			posted = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	defer srv.Close()
+
+	c := Config{BaseURL: srv.URL, Token: "secret"}
+	created, password, err := c.EnsureUserReset("alice", "a@x.com")
+	if err != nil {
+		t.Fatalf("EnsureUserReset: %v", err)
+	}
+	if !created || password == "" || !posted {
+		t.Fatalf("expected created+password+POST, got created=%v pw=%q posted=%v", created, password, posted)
+	}
+}
+
+func TestEnsureUserResetPatchesWhenExists(t *testing.T) {
+	var patched bool
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users/alice":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/admin/users/alice":
+			patched = true
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPost:
+			t.Error("must not create when the account already exists")
+			w.WriteHeader(http.StatusTeapot)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	defer srv.Close()
+
+	c := Config{BaseURL: srv.URL, Token: "secret"}
+	created, password, err := c.EnsureUserReset("alice", "a@x.com")
+	if err != nil {
+		t.Fatalf("EnsureUserReset: %v", err)
+	}
+	if created {
+		t.Fatal("expected created=false for existing account")
+	}
+	if password == "" {
+		t.Fatal("expected a fresh password even for an existing account")
+	}
+	if !patched {
+		t.Fatal("expected a PATCH to reset the password")
+	}
+	if body["password"] != password {
+		t.Errorf("returned password %q does not match the one sent %v", password, body["password"])
+	}
+	if body["must_change_password"] != true {
+		t.Errorf("expected must_change_password=true, got %v", body["must_change_password"])
 	}
 }
 
@@ -82,12 +160,15 @@ func TestEnsureUserNoOpWhenExists(t *testing.T) {
 	defer srv.Close()
 
 	c := Config{BaseURL: srv.URL, Token: "secret"}
-	got, err := c.EnsureUser("alice", "a@x.com")
+	got, password, err := c.EnsureUser("alice", "a@x.com")
 	if err != nil {
 		t.Fatalf("EnsureUser: %v", err)
 	}
 	if got {
 		t.Fatal("expected created=false for existing user")
+	}
+	if password != "" {
+		t.Fatal("expected empty password when account already exists")
 	}
 	if created {
 		t.Fatal("must not POST when the user already exists")

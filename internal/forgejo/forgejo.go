@@ -47,26 +47,34 @@ func ConfigFromEnv() Config {
 // Configured reports whether accounts can actually be provisioned.
 func (c Config) Configured() bool { return c.BaseURL != "" && c.Token != "" }
 
+// LoginURL is the web sign-in page members are pointed at in their welcome
+// email, e.g. https://git.profullstack.com/user/login.
+func (c Config) LoginURL() string {
+	return strings.TrimRight(c.BaseURL, "/") + "/user/login"
+}
+
 // EnsureUser creates a Forgejo account for username (forwarding to email) if it
-// does not already exist. It is idempotent: created is false when the account
-// was already present. New accounts are created with must_change_password — git
-// access is via SSH keys, so the generated password is never used interactively.
-func (c Config) EnsureUser(username, email string) (created bool, err error) {
+// does not already exist. It is idempotent: created is false (and password "")
+// when the account was already present. New accounts get a generated temporary
+// password with must_change_password set; the caller emails it to the member so
+// they can sign in to the web UI once and set their own. Git over SSH still uses
+// their registered key.
+func (c Config) EnsureUser(username, email string) (created bool, password string, err error) {
 	if !c.Configured() {
-		return false, fmt.Errorf("forgejo not configured")
+		return false, "", fmt.Errorf("forgejo not configured")
 	}
 
 	exists, err := c.userExists(username)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if exists {
-		return false, nil
+		return false, "", nil
 	}
 
 	pw, err := randomPassword()
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	body, _ := json.Marshal(map[string]any{
 		"username":             username,
@@ -76,12 +84,62 @@ func (c Config) EnsureUser(username, email string) (created bool, err error) {
 	})
 	status, resp, err := c.do(http.MethodPost, "/admin/users", body)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if status < 200 || status >= 300 {
-		return false, fmt.Errorf("forgejo create user %q: %d: %s", username, status, truncate(resp, 200))
+		return false, "", fmt.Errorf("forgejo create user %q: %d: %s", username, status, truncate(resp, 200))
 	}
-	return true, nil
+	return true, pw, nil
+}
+
+// EnsureUserReset creates the account if missing, or resets an existing
+// account's password to a fresh temporary one with must_change_password set.
+// Unlike EnsureUser it always returns a usable password — even for accounts
+// that already exist (whose original one-time password we no longer hold).
+// created reports whether the account was newly made. Used by the notify-creds
+// re-send so every member receives working web credentials.
+func (c Config) EnsureUserReset(username, email string) (created bool, password string, err error) {
+	if !c.Configured() {
+		return false, "", fmt.Errorf("forgejo not configured")
+	}
+	exists, err := c.userExists(username)
+	if err != nil {
+		return false, "", err
+	}
+	pw, err := randomPassword()
+	if err != nil {
+		return false, "", err
+	}
+	if !exists {
+		body, _ := json.Marshal(map[string]any{
+			"username":             username,
+			"email":                email,
+			"password":             pw,
+			"must_change_password": true,
+		})
+		status, resp, err := c.do(http.MethodPost, "/admin/users", body)
+		if err != nil {
+			return false, "", err
+		}
+		if status < 200 || status >= 300 {
+			return false, "", fmt.Errorf("forgejo create user %q: %d: %s", username, status, truncate(resp, 200))
+		}
+		return true, pw, nil
+	}
+	// Reset the existing account's password. login_name/source_id are optional
+	// for local accounts in current Forgejo, so we send only the fields we change.
+	body, _ := json.Marshal(map[string]any{
+		"password":             pw,
+		"must_change_password": true,
+	})
+	status, resp, err := c.do(http.MethodPatch, "/admin/users/"+username, body)
+	if err != nil {
+		return false, "", err
+	}
+	if status < 200 || status >= 300 {
+		return false, "", fmt.Errorf("forgejo reset user %q: %d: %s", username, status, truncate(resp, 200))
+	}
+	return false, pw, nil
 }
 
 // userExists reports whether a Forgejo user with this name is present.
