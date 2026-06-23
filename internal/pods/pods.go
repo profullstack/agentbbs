@@ -13,8 +13,11 @@
 package pods
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,6 +90,69 @@ func (m *Manager) hasMount(name, dest string) bool {
 	return false
 }
 
+// hasImage reports whether the named container is running the given image.
+// Used to roll out a new pod image: a mismatch triggers an idle recreate so
+// members pick up added tooling without losing their home volume. A blank or
+// unresolvable image name is treated as a match (never heal on uncertainty).
+func (m *Manager) hasImage(name, image string) bool {
+	if image == "" {
+		return true
+	}
+	out, err := exec.Command(m.engine, "container", "inspect", "-f", "{{.ImageName}}", name).Output()
+	if err != nil {
+		return true
+	}
+	got := strings.TrimSpace(string(out))
+	// Normalize: inspect may report "localhost/agentbbs-pod:latest" while m.image
+	// is the same; also tolerate the docker.io/library/ prefix podman adds.
+	norm := func(s string) string {
+		s = strings.TrimPrefix(s, "docker.io/library/")
+		s = strings.TrimPrefix(s, "docker.io/")
+		s = strings.TrimPrefix(s, "localhost/")
+		return s
+	}
+	return norm(got) == norm(image)
+}
+
+// agentDir is the host directory bind-mounted into a pod at /run/agentbbs-agent,
+// where Attach drops a forwarded SSH-agent socket. Derived as <data>/agent/<user>
+// (a sibling of the users dir). Empty — disabling agent forwarding — when the
+// users dir isn't configured or the directory can't be created.
+func (m *Manager) agentDir(user string) string {
+	if m.usersDir == "" {
+		return ""
+	}
+	d := filepath.Join(filepath.Dir(m.usersDir), "agent", unsafeName.ReplaceAllString(strings.ToLower(user), "-"))
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return ""
+	}
+	return d
+}
+
+// startAgent forwards the connecting client's SSH agent into the member's pod:
+// it listens on a fresh unix socket in the bind-mounted agent dir and proxies
+// connections back over the SSH session. Returns the in-pod SSH_AUTH_SOCK path
+// and a cleanup func, or "" when forwarding can't be set up (no agent dir / no
+// socket). With this, `git push git@git.profullstack.com` inside the pod uses
+// the member's own key — nothing is copied into the pod.
+func (m *Manager) startAgent(s ssh.Session, user string) (sock string, cleanup func()) {
+	dir := m.agentDir(user)
+	if dir == "" {
+		return "", func() {}
+	}
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	fname := "agent-" + hex.EncodeToString(b[:]) + ".sock"
+	hostSock := filepath.Join(dir, fname)
+	_ = os.Remove(hostSock)
+	l, err := net.Listen("unix", hostSock)
+	if err != nil {
+		return "", func() {}
+	}
+	go ssh.ForwardAgentConnections(l, s)
+	return "/run/agentbbs-agent/" + fname, func() { _ = l.Close(); _ = os.Remove(hostSock) }
+}
+
 // Engine reports the active container engine.
 func (m *Manager) Engine() string { return m.engine }
 
@@ -102,6 +168,9 @@ func (m *Manager) ensure(user string) (string, error) {
 	// Bind the host's public_html into the pod so a member's edits at
 	// ~/public_html are exactly what Caddy serves at <name>.<host>.
 	_, pubSpec := m.publicHTMLMount(user)
+	// Bind a per-user agent dir into the pod; Attach drops a forwarded SSH-agent
+	// socket here so `git push` uses the member's own key (see startAgent).
+	agentDir := m.agentDir(user)
 	if m.engine == "docker" {
 		// Under docker the pod runs as uid 1000 (never container root), so the
 		// named home volume — and the bind-mounted public_html — must be owned
@@ -131,11 +200,17 @@ func (m *Manager) ensure(user string) (string, error) {
 		m.mu.Lock()
 		idle := m.attached[name] == 0
 		m.mu.Unlock()
-		if pubSpec != "" && idle && !m.hasMount(name, "/home/dev/public_html") {
-			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate with the bind
+		// Recreate an idle pod when it's missing the public_html bind OR is
+		// running an out-of-date image (e.g. a new pod image with added tooling).
+		// The home volume persists across rm, so member data is kept; a busy pod
+		// heals on its next idle attach instead.
+		needsHeal := idle && ((pubSpec != "" && !m.hasMount(name, "/home/dev/public_html")) ||
+			(agentDir != "" && !m.hasMount(name, "/run/agentbbs-agent")) ||
+			!m.hasImage(name, m.image))
+		if needsHeal {
+			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate
 		} else {
 			_ = exec.Command(m.engine, "start", name).Run() // no-op if running
-			m.tuneApt(name)
 			return name, nil
 		}
 	}
@@ -153,6 +228,9 @@ func (m *Manager) ensure(user string) (string, error) {
 	}
 	if pubSpec != "" {
 		args = append(args, "-v", pubSpec)
+	}
+	if agentDir != "" {
+		args = append(args, "-v", agentDir+":/run/agentbbs-agent")
 	}
 	if m.engine == "docker" {
 		// Rootful docker: a breakout is host-root, so refuse to hand out
@@ -178,26 +256,7 @@ func (m *Manager) ensure(user string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pods: create failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	m.tuneApt(name)
 	return name, nil
-}
-
-// tuneApt makes apt usable inside the hardened pod. apt drops privileges to
-// the _apt user for downloads (setgroups/setegid/seteuid), which needs
-// CAP_SETUID/CAP_SETGID/CAP_CHOWN — caps we intentionally drop (cap-drop ALL).
-// Rather than re-grant those to the whole container, disable apt's download
-// sandbox so package management runs as the pod's (rootless-mapped) root.
-//
-// Only applies to the podman/container-root path; under docker the pod runs as
-// uid 1000 and can't write /etc/apt (apt isn't usable there by design). Failure
-// is non-fatal: a missing config just means the user sees the old apt errors.
-func (m *Manager) tuneApt(name string) {
-	if m.engine == "docker" {
-		return
-	}
-	_ = exec.Command(m.engine, "exec", "--user", "root", name,
-		"sh", "-c", `printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/00no-sandbox`,
-	).Run()
 }
 
 // Attach provisions the pod and wires the SSH session to a shell inside it.
@@ -212,14 +271,22 @@ func (m *Manager) Attach(s ssh.Session, user string) error {
 		return err
 	}
 
+	// Forward the client's SSH agent (ssh -A) into the pod so git push uses the
+	// member's own key. No-op unless the client requested forwarding.
+	execEnv := []string{"-e", "TERM=" + ptyReq.Term}
+	if ssh.AgentRequested(s) {
+		if sock, cleanup := m.startAgent(s, user); sock != "" {
+			defer cleanup()
+			execEnv = append(execEnv, "-e", "SSH_AUTH_SOCK="+sock)
+		}
+	}
+
 	shell := env("AGENTBBS_POD_SHELL", "/bin/bash")
-	cmd := exec.Command(m.engine, "exec", "-it",
-		"-e", "TERM="+ptyReq.Term,
-		name, shell, "-l")
+	cmd := exec.Command(m.engine, append(append([]string{"exec", "-it"}, execEnv...), name, shell, "-l")...)
 	f, err := pty.Start(cmd)
 	if err != nil {
 		// busybox-ish images may lack bash
-		cmd = exec.Command(m.engine, "exec", "-it", "-e", "TERM="+ptyReq.Term, name, "/bin/sh", "-l")
+		cmd = exec.Command(m.engine, append(append([]string{"exec", "-it"}, execEnv...), name, "/bin/sh", "-l")...)
 		f, err = pty.Start(cmd)
 		if err != nil {
 			return fmt.Errorf("pods: attach failed: %w", err)

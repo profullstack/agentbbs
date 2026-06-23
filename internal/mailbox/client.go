@@ -7,16 +7,19 @@ import (
 	"strings"
 )
 
-// Identity is the acting member and whether they hold the paid membership.
+// Identity is the acting member. AgentMail is a free benefit of membership, so
+// having a registered handle is the only requirement; Paid is retained for
+// tier-aware features (e.g. quotas) but no longer gates access.
 type Identity struct {
 	Name string // local-part / handle, e.g. "alice"
-	Paid bool   // Founding Lifetime Member; mail is gated on this
+	Paid bool   // Founding Lifetime Member (informational; does not gate mail)
 }
 
-// ErrNotPaid is returned to a non-paid member attempting a mail action.
-var ErrNotPaid = errors.New("AgentMail is a Founding Lifetime Member feature ($99 one-time) — upgrade: ssh join@bbs.profullstack.com")
+// ErrNotMember is returned when a caller without a registered handle attempts a
+// mail action. AgentMail is open to every verified member.
+var ErrNotMember = errors.New("AgentMail is a member feature — register first: ssh join@bbs.profullstack.com")
 
-// Client is the ergonomic, paid-gated facade the TUI and bot mode use. Every
+// Client is the ergonomic, member-gated facade the TUI and bot mode use. Every
 // method returns plain structs, so the same calls serve humans and agents.
 type Client struct {
 	t        Transport
@@ -25,8 +28,8 @@ type Client struct {
 	pageSize int
 }
 
-// NewClient builds a paid-gated client. domain is the mail domain (e.g.
-// mail.profullstack.com); pageSize defaults to 50 when <= 0.
+// NewClient builds a member-gated client. domain is the email address domain
+// (e.g. bbs.profullstack.com); pageSize defaults to 50 when <= 0.
 func NewClient(t Transport, id Identity, domain string, pageSize int) *Client {
 	if pageSize <= 0 {
 		pageSize = 50
@@ -34,12 +37,12 @@ func NewClient(t Transport, id Identity, domain string, pageSize int) *Client {
 	return &Client{t: t, id: id, domain: domain, pageSize: pageSize}
 }
 
-// Address is the member's own mailbox address, e.g. alice@mail.profullstack.com.
+// Address is the member's own mailbox address, e.g. alice@bbs.profullstack.com.
 func (c *Client) Address() string { return c.id.Name + "@" + c.domain }
 
 func (c *Client) gate() error {
-	if c.id.Name == "" || !c.id.Paid {
-		return ErrNotPaid
+	if c.id.Name == "" {
+		return ErrNotMember
 	}
 	return nil
 }

@@ -4,24 +4,27 @@ import (
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/store"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
-// board renders the global top scores (PRD §5.1 leaderboards).
+// board renders the global top scores for one game (PRD §5.1 leaderboards).
 type board struct {
 	ctx    plugin.Context
+	game   string
 	scores []store.Score
 	err    error
 }
 
-func newBoard(ctx plugin.Context) *board { return &board{ctx: ctx} }
+func newBoard(ctx plugin.Context, game string) *board {
+	return &board{ctx: ctx, game: game}
+}
 
 func (b *board) Init() tea.Cmd {
 	return func() tea.Msg {
-		scores, err := b.ctx.Store.TopScores("snake", 10)
+		scores, err := b.ctx.Store.TopScores(b.game, 10)
 		return boardMsg{scores: scores, err: err}
 	}
 }
@@ -42,17 +45,17 @@ func (b *board) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (b *board) View() string {
-	s := tStyle.Render("Leaderboard — snake") + "\n\n"
+	s := theme.Title("Leaderboard — "+b.game) + "\n\n"
 	switch {
 	case b.err != nil:
-		s += eStyle.Render("error: " + b.err.Error())
+		s += ui.Danger.Render("error: " + b.err.Error())
 	case len(b.scores) == 0:
-		s += dStyle.Render("no scores yet — be the first")
+		s += ui.Dim.Render("no scores yet — be the first")
 	default:
 		for i, sc := range b.scores {
 			s += fmt.Sprintf("%2d. %-20s %6d\n", i+1, sc.User, sc.Score)
 		}
 	}
-	s += "\n" + dStyle.Render("any key to return")
-	return lipgloss.NewStyle().Padding(1, 2).Render(s)
+	s += "\n" + ui.KeyBar("any-key return to menu")
+	return ui.Frame.Render(s)
 }

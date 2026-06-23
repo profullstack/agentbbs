@@ -135,7 +135,7 @@ func RunBot(ctx context.Context, c *Client, args []string, in io.Reader, out io.
 		if len(args) > 3 {
 			on = !strings.EqualFold(args[3], "off") && args[3] != "false" && args[3] != "0"
 		}
-		if args[0] == "flag" {
+		if strings.ToLower(args[0]) == "flag" {
 			err = c.Flag(ctx, mailbox, uid, on)
 		} else {
 			err = c.MarkSeen(ctx, mailbox, uid, on)

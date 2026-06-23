@@ -173,15 +173,17 @@ func parseRange(spec string) (low, high int64) {
 	if len(parts) == 1 {
 		h, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			h = math.MaxInt64
-			return 0, h
+			return 0, 0 // malformed — empty range instead of all articles
 		}
 		return h, h
 	}
-	l, _ := strconv.ParseInt(parts[0], 10, 64)
+	l, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0 // malformed — empty range
+	}
 	h, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		h = math.MaxInt64
+		return 0, 0 // malformed — empty range
 	}
 	return l, h
 }

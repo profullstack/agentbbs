@@ -5,6 +5,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -41,8 +43,20 @@ func scanUser(sc interface{ Scan(...any) error }) (User, error) {
 	u.EmailVerified = verified != 0
 	u.Premium = premium != 0
 	u.Banned = banned != 0
-	u.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	if t, err := time.Parse(time.RFC3339, created); err == nil {
+		u.CreatedAt = t
+	}
 	return u, nil
+}
+
+// Message is one member-to-member note in the store-and-forward inbox.
+type Message struct {
+	ID   int64
+	From string
+	To   string
+	Body string
+	Read bool
+	At   time.Time
 }
 
 // Score is one leaderboard entry.
@@ -99,6 +113,21 @@ type Store interface {
 	// Chat transcripts for the agent@ surface.
 	AddChat(userID int64, username, role, text string) error
 	RecentChats(username string, n int) ([]ChatMessage, error)
+
+	// Member-to-member messaging (store-and-forward inbox).
+
+	// SendMessage leaves a note from→to in the recipient's inbox.
+	SendMessage(from, to, body string) error
+	// Inbox returns up to n messages addressed to username, newest first.
+	Inbox(username string, n int) ([]Message, error)
+	// UnreadCount reports how many unread messages username has waiting.
+	UnreadCount(username string) (int, error)
+	// MarkRead marks the given message ids read (scoped to username so a member
+	// can only clear their own mail). Empty ids is a no-op.
+	MarkRead(username string, ids []int64) error
+	// OnlineUsers reports the set of usernames with an open session (no
+	// ended_at), for the members directory presence dots.
+	OnlineUsers() (map[string]bool, error)
 
 	// Custom domains mapped to a member's homepage (public_html).
 	// MapDomain binds domain→username, returning ErrDomainTaken if it is
@@ -506,6 +535,15 @@ CREATE TABLE IF NOT EXISTS files_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY,
+  from_user TEXT NOT NULL,
+  to_user TEXT NOT NULL,
+  body TEXT NOT NULL,
+  read INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user, id DESC);
 `
 
 func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
@@ -516,8 +554,12 @@ func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
 		if err != nil {
 			return User{}, err
 		}
-		id, _ := res.LastInsertId()
-		return User{ID: id, Name: name, Kind: kind, PubKeyFP: fp, CreatedAt: time.Now().UTC()}, nil
+		id, err := res.LastInsertId()
+		if err != nil {
+			return User{}, fmt.Errorf("get user id after insert: %w", err)
+		}
+		return User{
+			ID: id, Name: name, Kind: kind, PubKeyFP: fp, CreatedAt: time.Now().UTC()}, nil
 	case err != nil:
 		return User{}, err
 	}
@@ -719,6 +761,75 @@ func (s *sqliteStore) RecentChats(username string, n int) ([]ChatMessage, error)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func (s *sqliteStore) SendMessage(from, to, body string) error {
+	_, err := s.db.Exec(`INSERT INTO messages (from_user, to_user, body) VALUES (?,?,?)`,
+		from, to, body)
+	return err
+}
+
+func (s *sqliteStore) Inbox(username string, n int) ([]Message, error) {
+	if n <= 0 {
+		n = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, from_user, to_user, body, read, created_at
+		FROM messages WHERE to_user = ? ORDER BY id DESC LIMIT ?`, username, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var read int
+		var at string
+		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Body, &read, &at); err != nil {
+			return nil, err
+		}
+		m.Read = read != 0
+		m.At, _ = time.Parse(time.RFC3339, at)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStore) UnreadCount(username string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE to_user = ? AND read = 0`, username).Scan(&n)
+	return n, err
+}
+
+func (s *sqliteStore) MarkRead(username string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	q := `UPDATE messages SET read = 1 WHERE to_user = ? AND id IN (?` + strings.Repeat(",?", len(ids)-1) + `)`
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, username)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+func (s *sqliteStore) OnlineUsers() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT username FROM sessions WHERE ended_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	online := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		online[strings.ToLower(name)] = true
+	}
+	return online, rows.Err()
 }
 
 func (s *sqliteStore) MapDomain(domain, username string) error {

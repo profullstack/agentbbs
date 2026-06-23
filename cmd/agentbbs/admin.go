@@ -77,11 +77,12 @@ func (r *liveReg) List() []admin.Live {
 // Kill closes a live session by id. Returns false if it is already gone.
 func (r *liveReg) Kill(id int64) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	e, ok := r.m[id]
-	r.mu.Unlock()
 	if !ok {
 		return false
 	}
+	delete(r.m, id)
 	_ = e.s.Close()
 	return true
 }

@@ -14,7 +14,8 @@
 set -euo pipefail
 
 MAILU_DIR="${MAILU_DIR:-/opt/agentbbs/deploy/mailu}"
-DOMAIN="${MAIL_DOMAIN:-mail.profullstack.com}"
+# The address domain (the @-part), which may differ from the mail server host.
+DOMAIN="${MAIL_ADDR_DOMAIN:-${MAIL_DOMAIN:-bbs.profullstack.com}}"
 MASTER_USER="${AGENTBBS_MAIL_MASTER_USER:-gateway}"
 QUOTA_BYTES="${MAIL_QUOTA_BYTES:-1000000000}" # 1 GB
 

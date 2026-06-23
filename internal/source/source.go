@@ -87,16 +87,45 @@ func Classify(raw string) (Kind, error) {
 
 // isBlockedIP reports whether an address must not be dialed: loopback,
 // link-local (incl. the 169.254.169.254 cloud-metadata endpoint), private
-// (RFC1918 / fc00::/7), multicast, or unspecified.
+// (RFC1918 / fc00::/7), multicast, unspecified, shared/reserved ranges
+// (100.64.0.0/10, 198.18.0.0/15), and documentation/example networks.
 func isBlockedIP(ip net.IP) bool {
-	return ip == nil ||
+	if ip == nil ||
 		ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
 		ip.IsMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsPrivate()
+		ip.IsPrivate() {
+		return true
+	}
+	// Shared address space (Carrier-Grade NAT / RFC 6598)
+	// 100.64.0.0/10
+	if ip4 := ip.To4(); ip4 != nil {
+		b := ip4[0]
+		// 100.64.0.0 - 100.127.255.255
+		if b == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
+		// Benchmarking (RFC 2544) 198.18.0.0/15
+		// 198.18.0.0 - 198.19.255.255
+		if b == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+		// Documentation / example (RFC 5737)
+		// 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
+		if b == 192 && ip4[1] == 0 && ip4[2] == 2 {
+			return true
+		}
+		if b == 198 && ip4[1] == 51 && ip4[2] == 100 {
+			return true
+		}
+		if b == 203 && ip4[1] == 0 && ip4[2] == 113 {
+			return true
+		}
+	}
+	return false
 }
 
 // guardURL validates scheme and resolves the host, rejecting any URL that
