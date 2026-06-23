@@ -323,6 +323,12 @@ if [ -f "$SRC_DIR/pods/Containerfile" ]; then
        podman build -t localhost/agentbbs-pod:latest \
        -f "$SRC_DIR/pods/Containerfile" "$SRC_DIR/pods" >/dev/null 2>&1; then
     POD_IMAGE="localhost/agentbbs-pod:latest"
+  elif sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$SVC_UID" \
+       podman image exists localhost/agentbbs-pod:latest >/dev/null 2>&1; then
+    # A transient build failure (e.g. registry/network hiccup) must not downgrade
+    # pods back to the base image — keep using the previously built one.
+    POD_IMAGE="localhost/agentbbs-pod:latest"
+    warn "pod image rebuild failed — using the existing localhost/agentbbs-pod:latest"
   else
     warn "pod image build failed — keeping $POD_IMAGE (run: podman build -f $SRC_DIR/pods/Containerfile $SRC_DIR/pods)"
   fi

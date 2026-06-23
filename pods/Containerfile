@@ -42,4 +42,16 @@ RUN printf '%s\n' \
  && printf '[ -n "$PS1" ] && [ -r /etc/motd ] && cat /etc/motd\n' \
   > /etc/profile.d/10-agentbbs-motd.sh
 
+# Make `git@git.profullstack.com:...` reach Forgejo's SSH server (port 2222) and
+# trust it on first use, so clones/pushes just work with a forwarded agent key.
+RUN install -d -m 0755 /etc/ssh/ssh_config.d \
+ && printf '%s\n' \
+  'Host git.profullstack.com' \
+  '    Port 2222' \
+  '    User git' \
+  '    StrictHostKeyChecking accept-new' \
+  > /etc/ssh/ssh_config.d/10-agentgit.conf \
+ && grep -q 'ssh_config.d/\*.conf' /etc/ssh/ssh_config 2>/dev/null \
+  || printf '\nInclude /etc/ssh/ssh_config.d/*.conf\n' >> /etc/ssh/ssh_config
+
 CMD ["sleep", "infinity"]
