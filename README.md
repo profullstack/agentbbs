@@ -74,6 +74,15 @@ Ops:
 
 ```bash
 ./agentbbs grant-pod alice 12    # manual pod grant (12 months)
+
+# (re)email verified members their git + mailbox creds/links — preview first,
+# then --send. Git: resets each Forgejo account to a fresh one-time password and
+# emails the web login link; mailbox: ensures the @mail alias and emails the
+# address + webmail link. Needs AGENTBBS_SMTP_*, _FORGEJO_*, _FORWARDEMAIL_* set.
+./agentbbs notify-creds                  # preview, all verified members
+./agentbbs notify-creds --send           # really send git + mailbox to everyone
+./agentbbs notify-creds --git --send     # git creds only
+./agentbbs notify-creds --user alice --mail --send
 ```
 
 ## Deploy

@@ -24,6 +24,8 @@
 //	agentbbs mint-token NAME             issue a WebSocket API token for NAME
 //	agentbbs qrypt-invite NAME           mint a qrypt.chat anonymous invite for NAME
 //	agentbbs qrypt-issuer-keygen         print a fresh qrypt issuer seed + public key
+//	agentbbs notify-creds [flags]        (re)email verified members their git +
+//	                                     mailbox creds/links (preview unless --send)
 package main
 
 import (
@@ -153,6 +155,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-invite" {
 		qryptInviteCmd(st, os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "notify-creds" {
+		notifyCreds(st, os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
@@ -880,6 +886,22 @@ func (a *app) ensurePremium(u *store.User) bool {
 	return true
 }
 
+// mailWelcomeEmailBody is the plain-text email sent when a member's @host
+// mailbox alias is provisioned: their new address and the webmail link. Used by
+// the `notify-creds` backfill command (see notifycreds.go).
+func mailWelcomeEmailBody(name, address, webmail string) string {
+	b := "Hi " + name + ",\n\n" +
+		"Your member mailbox is live:\n\n" +
+		"    " + address + "\n\n" +
+		"Mail sent there forwards to this address.\n"
+	if webmail != "" {
+		b += "\nRead and send from the webmail interface here:\n\n" +
+			"    " + webmail + "\n"
+	}
+	b += "\nIf you didn't request this, you can ignore this email.\n"
+	return b
+}
+
 // showPremiumWelcome prints a premium member's perks: custom domains and the
 // in-hub Tor shell. (Email is free for all members — see the join@ summary.)
 func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
@@ -1028,14 +1050,15 @@ func (a *app) provisionGit(u *store.User, pubKey string) {
 	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
 		return
 	}
-	created, err := a.forgejo.EnsureUser(u.Name, u.Email)
+	created, password, err := a.forgejo.EnsureUser(u.Name, u.Email)
 	if err != nil {
 		log.Error("forgejo provision", "user", u.Name, "err", err)
 		return
 	}
-	if created {
-		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	if !created {
+		return
 	}
+	log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
 	// Register the BBS SSH key so the member can push with the same key they sign
 	// in with. No-op when called without a session key (e.g. the web verify flow).
 	if pubKey != "" {
@@ -1045,11 +1068,21 @@ func (a *app) provisionGit(u *store.User, pubKey string) {
 			log.Info("registered git ssh key", "user", u.Name)
 		}
 	}
+	// Email the verified address their web sign-in link + one-time password so
+	// they can log in to the Forgejo UI and create repositories. Best-effort:
+	// the account already exists, so a mail failure must not block anything.
+	if a.mail.Configured() {
+		if err := a.mail.Send(u.Email, "Your git.profullstack.com account is ready",
+			gitWelcomeEmailBody(u.Name, password, a.forgejo.LoginURL())); err != nil {
+			log.Error("git welcome email", "user", u.Name, "err", err)
+		}
+	}
 }
 
-// gitWelcomeEmailBody is the plain-text email sent by the notify-creds ops
-// command when a member's AgentGit (Forgejo) account is created or reset: web
-// login link, username, and the one-time password to change on first sign-in.
+// gitWelcomeEmailBody is the plain-text email sent when a member's AgentGit
+// (Forgejo) account is created or reset — on provisioning and by the
+// notify-creds ops command: web login link, username, and the one-time password
+// they must change on first sign-in.
 func gitWelcomeEmailBody(name, password, loginURL string) string {
 	return "Hi " + name + ",\n\n" +
 		"Your git account is ready. Sign in to the web interface here:\n\n" +
