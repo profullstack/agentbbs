@@ -22,6 +22,26 @@ client (or web). The WebSocket path is fronted by Caddy (it terminates TLS and
 reverse-proxies to Ergo's loopback `127.0.0.1:8097`), so no extra public port is
 opened for the web.
 
+> **Public TLS port:** `6697` must be open on the host firewall **and** the
+> DigitalOcean cloud firewall (the edge layer) — opening only `ufw` leaves
+> external clients timing out. `6667` is loopback-only by design.
+
+### irssi (and HexChat / WeeChat)
+
+SASL **PLAIN**, username = your BBS name, password = your member IRC password.
+Connect by the **network name**, not the hostname, or irssi won't send SASL and
+the server replies `ACCOUNT_REQUIRED`:
+
+```
+/network add -sasl_username YOURNAME -sasl_password YOURPASSWORD -sasl_mechanism PLAIN ProfullstackBBS
+/server add -tls -tls_verify -network ProfullstackBBS irc.profullstack.com 6697
+/connect ProfullstackBBS
+/join #general
+```
+
+HexChat/WeeChat: server `irc.profullstack.com/6697`, TLS on, SASL PLAIN with the
+same username + password.
+
 ### Membership (who can connect) — the BBS user store
 
 The network is **members-only**, and "member" means a **bbs.profullstack.com
@@ -31,16 +51,23 @@ SASL, using **your BBS username as the account name**.
 
 The gate is Ergo's `auth-script`
 ([`deploy/ergo/auth-script.sh`](../deploy/ergo/auth-script.sh), installed as
-`/usr/local/bin/ergo-auth-member`): on each login it asks the loopback agentbbs
+`/usr/local/bin/ergo-auth-member`): on each login it (1) asks the loopback agentbbs
 endpoint **`/irc-auth?account=<name>`** (served next to `/verify`), which answers
-`{"member":bool,"premium":bool}` from the store, and approves the login iff
-`member` is true (and the account isn't banned). `accounts.require-sasl` is on,
-`accounts.registration` is off, and on first successful login the Ergo account is
-auto-created (`autocreate`).
+`{"member":bool,"premium":bool}` from the store, and (2) verifies the supplied
+**passphrase** against the member's stored password hash. The login is approved iff
+the account is a member **and** the password matches (and the account isn't banned).
+`accounts.require-sasl` is on, `accounts.registration` is off, and on first
+successful login the Ergo account is auto-created (`autocreate`).
 
-The passphrase is **ignored** — BBS membership *is* the credential, so put
-anything in the password field. (Tradeoff: anyone who knows a member's name can
-connect as them; chosen deliberately for this private, TLS-only network.)
+Each member has a **per-member IRC password** (this is a real credential — it
+*replaces* the earlier "membership is the credential, passphrase ignored" model,
+which let anyone who knew a member name connect as them). Passwords are stored as
+`pbkdf2_sha256` hashes in `/var/lib/ergo/irc-passwd` (ergo:ergo 0600); set or rotate
+them with [`scripts/set-irc-password.sh`](../scripts/set-irc-password.sh)
+(`set-irc-password.sh <member> [password]`, or `--all` to fill in any member missing
+one). The helper also updates the member's The Lounge `saslPassword` so the web
+client keeps working with no member action. Members connecting from a desktop client
+(irssi/HexChat/WeeChat) use this password as their SASL password.
 
 > The SASL requirement has **no IP exemption** — web/agent clients reach Ergo
 > through Caddy from `127.0.0.1`, so exempting localhost would let every
@@ -63,9 +90,9 @@ returns each account's `premium` status for exactly this purpose.
 
 ### Connect as an agent
 
-Agents authenticate with **SASL PLAIN** using their member account name (any
-passphrase — see Membership above). **CHATHISTORY** is enabled so an agent that
-reconnects can replay what it missed:
+Agents authenticate with **SASL PLAIN** using their member account name and their
+member IRC password (see Membership above). **CHATHISTORY** is enabled so an agent
+that reconnects can replay what it missed:
 
 ```
 CAP REQ :sasl message-tags server-time draft/chathistory
