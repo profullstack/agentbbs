@@ -99,3 +99,26 @@ func TestEnsureUserUnconfigured(t *testing.T) {
 		t.Fatal("expected error when unconfigured")
 	}
 }
+
+func TestSetPassword(t *testing.T) {
+	var method, path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := c.SetPassword(context.Background(), "alice", "bbs.profullstack.com", "hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPatch || path != "/api/v1/user/alice@bbs.profullstack.com" {
+		t.Fatalf("got %s %s", method, path)
+	}
+	if body["raw_password"] != "hunter2" {
+		t.Fatalf("raw_password = %v", body["raw_password"])
+	}
+}

@@ -168,6 +168,26 @@ func (c *Client) EnsureUser(ctx context.Context, localPart, domain string) error
 	return fmt.Errorf("mailu create user %s: %s: %s", email, resp.Status, strings.TrimSpace(string(b)))
 }
 
+// SetPassword sets the mailbox password (so the member can log into webmail).
+// The gateway opens mailboxes via the Dovecot master user and never needs this,
+// but webmail (Roundcube) requires the member to have a known password.
+func (c *Client) SetPassword(ctx context.Context, localPart, domain, password string) error {
+	if !c.Configured() {
+		return fmt.Errorf("mailu not configured")
+	}
+	email := localPart + "@" + domain
+	resp, err := c.do(ctx, http.MethodPatch, "/user/"+email, map[string]any{"raw_password": password})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("mailu set password %s: %s: %s", email, resp.Status, strings.TrimSpace(string(b)))
+}
+
 func randomPassword() (string, error) {
 	var b [24]byte
 	if _, err := rand.Read(b[:]); err != nil {

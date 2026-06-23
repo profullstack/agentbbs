@@ -31,6 +31,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -637,6 +638,10 @@ func (a *app) handleJoin(s ssh.Session) {
 	// mailbox at <name>@<mailDomain> (best-effort; mail is a bonus, never a gate).
 	seedHomepage(filepath.Join(a.dataDir, "users", u.Name, "public_html"), u.Name, a.host)
 	_ = a.ensureMailbox(u)
+	// Give them a webmail password so free members can log into webmail. The
+	// in-BBS reader uses the gateway master user and needs no password, but
+	// Roundcube does. (Re)set on each join@; they can change it in webmail.
+	webmailPW := a.setWebmailPassword(u)
 
 	includes := []string{
 		"  You're in. One login gets you everything — no other servers to ssh into:",
@@ -650,7 +655,15 @@ func (a *app) handleJoin(s ssh.Session) {
 		"    • the arcade & games",
 		"    • your homepage   https://" + a.host + "/~" + u.Name,
 	}
-	if a.webmailURL != "" {
+	if a.webmailURL != "" && webmailPW != "" {
+		includes = append(includes,
+			"",
+			"  Webmail (read your mail in a browser):",
+			"    • url        "+a.webmailURL,
+			"    • login      "+a.mailAddress(u.Name),
+			"    • password   "+webmailPW+"   (change it in webmail Settings)",
+		)
+	} else if a.webmailURL != "" {
 		includes = append(includes, "    • webmail         "+a.webmailURL)
 	}
 	wish.Println(s, "\n"+strings.Join(includes, "\n"))
@@ -1335,6 +1348,41 @@ func (a *app) ensureMailbox(u store.User) error {
 		return err
 	}
 	return nil
+}
+
+// setWebmailPassword sets (and returns) a fresh webmail password for the member
+// so free members can log into webmail. Best-effort: returns "" when Mailu isn't
+// configured or the API call fails. The in-BBS reader doesn't use this (it goes
+// through the gateway master user); only webmail needs a member password.
+func (a *app) setWebmailPassword(u store.User) string {
+	if !a.mailEnabled() || u.Name == "" {
+		return ""
+	}
+	pw := readablePassword()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.mailu.SetPassword(ctx, u.Name, a.mailDomain, pw); err != nil {
+		log.Error("set webmail password", "err", err, "address", a.mailAddress(u.Name))
+		return ""
+	}
+	return pw
+}
+
+// readablePassword returns a 16-char password from an unambiguous alphabet (no
+// 0/O/1/l/I) — easy to read off a terminal once and type into webmail.
+func readablePassword() string {
+	const alphabet = "abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789"
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to a hex token; correctness over readability.
+		var f [12]byte
+		_, _ = rand.Read(f[:])
+		return hex.EncodeToString(f[:])
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b[:])
 }
 
 // mailClientFor builds an AgentMail client for a member, connecting to the
