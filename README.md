@@ -85,6 +85,10 @@ Ops:
 ./agentbbs notify-creds --user alice --mail --send
 ```
 
+Member git accounts, mailbox welcome emails, `notify-creds`, and the two SMTP
+paths (transactional `:587` vs. the gateway relay `:25`) are documented in
+[`docs/credentials.md`](docs/credentials.md).
+
 ## Deploy
 
 ### Hosting requirements

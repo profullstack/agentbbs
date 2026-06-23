@@ -103,6 +103,13 @@ Without `AGENTBBS_MAIL_API_TOKEN` auto-provisioning is skipped (the address is
 still shown); without `AGENTBBS_MAIL_MASTER_PASS` the gateway can't open
 mailboxes.
 
+> **`AGENTBBS_MAIL_SMTP_ADDR` is `127.0.0.1:25` on purpose** — it's the gateway's
+> *loopback* hand-off into the on-box Mailu/Postfix MTA, not a remote submission
+> client, so `25` is correct (465/587 are for authenticated remote clients).
+> This is a separate config from `AGENTBBS_SMTP_*` (the transactional sender for
+> confirmation codes and `notify-creds`, which defaults to STARTTLS `:587`). See
+> [`credentials.md`](credentials.md#two-smtp-paths-and-why-one-is-25).
+
 ### Why the gateway talks to Dovecot directly (plaintext loopback)
 
 Mailu's **front** (nginx mail proxy) pre-authenticates every IMAP/SMTP login
