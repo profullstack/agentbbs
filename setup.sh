@@ -217,6 +217,21 @@ fi
 sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$SVC_UID" \
   podman pull -q "$POD_IMAGE" >/dev/null 2>&1 || warn "could not pre-pull $POD_IMAGE (pods will pull on first use)"
 
+# Build the member pod image (FROM $POD_IMAGE): adds git, openssh-client, Node,
+# and the Claude Code + Codex CLIs so members can code in their pod (BYO API
+# key). podman layer-caches, so an unchanged Containerfile rebuilds cheaply. On
+# failure we keep the base image rather than break pod launches.
+if [ -f "$SRC_DIR/pods/Containerfile" ]; then
+  log "building member pod image (localhost/agentbbs-pod:latest)"
+  if sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$SVC_UID" \
+       podman build -t localhost/agentbbs-pod:latest \
+       -f "$SRC_DIR/pods/Containerfile" "$SRC_DIR/pods" >/dev/null 2>&1; then
+    POD_IMAGE="localhost/agentbbs-pod:latest"
+  else
+    warn "pod image build failed — keeping $POD_IMAGE (run: podman build -f $SRC_DIR/pods/Containerfile $SRC_DIR/pods)"
+  fi
+fi
+
 # ---- 6. environment file ---------------------------------------------------
 ENV_DIR=/etc/agentbbs
 install -d -m 0750 "$ENV_DIR"
@@ -333,6 +348,9 @@ upsert_env() {  # KEY VALUE — skips when VALUE is empty
   chmod 0640 "$file"
 }
 # CoinPay: API key (read by the coinpay CLI) + merchant/business id.
+# Point existing installs at the freshly built member pod image (fresh installs
+# get it from the env-file template below).
+upsert_env AGENTBBS_POD_IMAGE "$POD_IMAGE"
 upsert_env COINPAY_API_KEY "${COINPAY_API_KEY:-}"
 upsert_env AGENTBBS_COINPAY_MERCHANT_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
 upsert_env COINPAY_BUSINESS_ID "${COINPAY_MERCHANT_ID:-${AGENTBBS_COINPAY_MERCHANT_ID:-}}"
