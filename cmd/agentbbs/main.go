@@ -400,6 +400,13 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		// provisions their @host email alias on the transition).
 		a.ensurePremium(&su)
 		u = auth.User{Name: su.Name, Kind: auth.Kind(su.Kind), PubKeyFP: fp, StoreID: su.ID}
+		// Backfill the git.profullstack.com account + SSH key on login. Idempotent
+		// and off the hot path: members who verified before AgentGit existed (or
+		// before their key was registered) get provisioned on their next visit.
+		if su.EmailVerified {
+			suCopy, key := su, authorizedKey(s)
+			go a.provisionGit(&suCopy, key)
+		}
 	}
 
 	sessID, _ := a.st.RecordSession(u.StoreID, s.User(), remoteIP(s), "hub")
@@ -779,7 +786,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 		}
 		if ok {
 			*u = vu
-			a.provisionGit(u)
+			a.provisionGit(u, authorizedKey(s))
 			wish.Println(s, "  Email confirmed ✓")
 			return true
 		}
@@ -954,7 +961,7 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
 		return
 	}
-	a.provisionGit(&u)
+	a.provisionGit(&u, "") // web flow: no SSH session key; key is added on next BBS login
 	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
 		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
 }
@@ -964,7 +971,7 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 // alike; plan only affects quotas, enforced by AgentGit, not account existence.
 // Failures are logged but never block BBS verification, and it is a no-op when
 // Forgejo is unconfigured.
-func (a *app) provisionGit(u *store.User) {
+func (a *app) provisionGit(u *store.User, pubKey string) {
 	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
 		return
 	}
@@ -976,6 +983,25 @@ func (a *app) provisionGit(u *store.User) {
 	if created {
 		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
 	}
+	// Register the BBS SSH key so the member can push with the same key they sign
+	// in with. No-op when called without a session key (e.g. the web verify flow).
+	if pubKey != "" {
+		if added, err := a.forgejo.EnsureKey(u.Name, "agentbbs", pubKey); err != nil {
+			log.Error("forgejo ssh key", "user", u.Name, "err", err)
+		} else if added {
+			log.Info("registered git ssh key", "user", u.Name)
+		}
+	}
+}
+
+// authorizedKey renders the session's public key as a single authorized_keys
+// line, or "" when the session has no key (guests / keyboard-interactive).
+func authorizedKey(s ssh.Session) string {
+	pk := s.PublicKey()
+	if pk == nil {
+		return ""
+	}
+	return strings.TrimSpace(string(gossh.MarshalAuthorizedKey(pk)))
 }
 
 // verifyPage renders the minimal confirmation result page.

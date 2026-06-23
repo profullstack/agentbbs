@@ -53,6 +53,7 @@ MAIL_DOMAIN="${MAIL_DOMAIN:-mail.${DOMAIN#*.}}"  # mail host (default: mail.<roo
 FORGEJO_HTTP_ADDR="${FORGEJO_HTTP_ADDR:-127.0.0.1:3000}"  # Forgejo loopback HTTP (Caddy fronts it)
 FORGEJO_DATA="${FORGEJO_DATA:-/var/lib/forgejo}"  # Forgejo state dir (repos, db)
 FORGEJO_ADMIN_USER="${FORGEJO_ADMIN_USER:-agentgit-admin}"  # Forgejo admin used to provision members
+FORGEJO_SSH_PORT="${FORGEJO_SSH_PORT:-2222}"  # Forgejo built-in SSH server port (git push); host :22 is agentbbs, :2202 admin
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -838,8 +839,15 @@ HTTP_ADDR = ${FORGEJO_HTTP_ADDR%%:*}
 HTTP_PORT = ${FORGEJO_HTTP_ADDR##*:}
 DOMAIN = ${GIT_DOMAIN}
 ROOT_URL = https://${GIT_DOMAIN}/
-DISABLE_SSH = true
-START_SSH_SERVER = false
+SSH_DOMAIN = ${GIT_DOMAIN}
+# Built-in SSH server (in-process, runs as the forgejo user) so members can push
+# with the same key they use for the BBS. Host :22 is agentbbs and :2202 is the
+# admin OpenSSH, so Forgejo gets its own port; clones use ssh://git@host:PORT/.
+DISABLE_SSH = false
+START_SSH_SERVER = true
+SSH_USER = git
+SSH_PORT = ${FORGEJO_SSH_PORT}
+SSH_LISTEN_PORT = ${FORGEJO_SSH_PORT}
 
 [database]
 DB_TYPE = sqlite3
@@ -850,7 +858,10 @@ ROOT = ${FORGEJO_DATA}/repos
 
 [service]
 DISABLE_REGISTRATION = true
-REQUIRE_SIGNIN_VIEW = true
+# Public read: member profiles (git.${DOMAIN#*.}/<name>) and public repos are
+# viewable without signing in; private repos stay private. Accounts are created
+# only by agentbbs (DISABLE_REGISTRATION), never self-serve.
+REQUIRE_SIGNIN_VIEW = false
 DEFAULT_KEEP_EMAIL_PRIVATE = true
 
 [security]
@@ -896,6 +907,9 @@ UNIT
   systemctl is-active --quiet forgejo \
     || warn "forgejo failed to start — check: journalctl -u forgejo -n50"
 
+  # Open the Forgejo SSH port so members can push (git@${GIT_DOMAIN}:${FORGEJO_SSH_PORT}).
+  ufw allow "${FORGEJO_SSH_PORT}/tcp" >/dev/null 2>&1 || true
+
   # First-run: create the admin agentbbs uses to mint member accounts, and store
   # an admin-scoped token in agentbbs.env. Guarded on the token being empty so
   # reruns never create duplicate tokens.
@@ -906,7 +920,7 @@ UNIT
       --password "$FJ_ADMIN_PW" --must-change-password=false --config "$FORGEJO_CONF" >/dev/null 2>&1 \
       || true
     FJ_TOKEN=$(sudo -u forgejo GITEA_WORK_DIR="$FORGEJO_DATA" /usr/local/bin/forgejo admin user generate-access-token \
-      --username "$FORGEJO_ADMIN_USER" --token-name "agentbbs-$(date +%s)" --scopes write:admin \
+      --username "$FORGEJO_ADMIN_USER" --token-name "agentbbs-$(date +%s)" --scopes write:admin,read:user,write:user \
       --config "$FORGEJO_CONF" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
     if [ -n "$FJ_TOKEN" ]; then
       upsert_env AGENTBBS_FORGEJO_URL "https://${GIT_DOMAIN}"
