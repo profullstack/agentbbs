@@ -246,6 +246,98 @@ func (s *session) readFile(vpath string, max int64) (data []byte, truncated bool
 	return buf[:n], false, nil
 }
 
+// errQuota means a write would push the member's private workspace over quota.
+var errQuota = errors.New("files: quota exceeded")
+
+// webOpen opens a file for HTTP download. It rejects the synthetic root and
+// directories; the caller closes the returned file.
+func (s *session) webOpen(vpath string) (*os.File, os.FileInfo, error) {
+	res, err := s.resolve(vpath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if res.root {
+		return nil, nil, os.ErrInvalid
+	}
+	f, err := os.Open(res.real)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if fi.IsDir() {
+		_ = f.Close()
+		return nil, nil, os.ErrInvalid
+	}
+	return f, fi, nil
+}
+
+// webSave stores an uploaded file at the destination vpath, enforcing the
+// private-area quota. It returns errQuota when the upload would exceed it.
+func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
+	res, err := s.resolve(vpath)
+	if err != nil {
+		return 0, err
+	}
+	if res.root || !res.writable {
+		return 0, os.ErrPermission
+	}
+	var existing int64
+	if fi, e := os.Stat(res.real); e == nil {
+		if fi.IsDir() {
+			return 0, os.ErrPermission
+		}
+		existing = fi.Size()
+	}
+	f, err := os.OpenFile(res.real, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	limit := int64(-1) // public area is operator-managed, unmetered
+	if res.area == areaMe {
+		if limit = s.quota - (s.used.Load() - existing); limit < 0 {
+			limit = 0
+		}
+	}
+	n, werr := copyLimited(f, r, limit)
+	cerr := f.Close()
+	if werr != nil {
+		_ = os.Remove(res.real)
+		return 0, werr
+	}
+	if cerr != nil {
+		return 0, cerr
+	}
+	if res.area == areaMe {
+		s.used.Add(n - existing)
+	}
+	return n, nil
+}
+
+// webMkdir and webRemove reuse the SFTP-side guards (root/writable checks).
+func (s *session) webMkdir(vpath string) error  { return s.mkdir(vpath) }
+func (s *session) webRemove(vpath string) error { return s.remove(vpath) }
+
+// copyLimited copies r into w. When limit >= 0 it returns errQuota if the source
+// has more than limit bytes (after writing exactly limit). limit < 0 is unbounded.
+func copyLimited(w io.Writer, r io.Reader, limit int64) (int64, error) {
+	if limit < 0 {
+		return io.Copy(w, r)
+	}
+	n, err := io.Copy(w, io.LimitReader(r, limit))
+	if err != nil {
+		return n, err
+	}
+	var probe [1]byte
+	if m, _ := r.Read(probe[:]); m > 0 {
+		return n, errQuota
+	}
+	return n, nil
+}
+
 // --- pkg/sftp request handlers ----------------------------------------------
 
 // Fileread serves downloads.

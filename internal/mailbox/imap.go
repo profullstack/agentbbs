@@ -58,6 +58,27 @@ func NewIMAPTransport(cfg IMAPConfig) (Transport, error) {
 	return &imapTransport{cfg: cfg, c: c}, nil
 }
 
+// VerifyLogin checks a username/password against the IMAP backend by logging in
+// and immediately logging out. It returns nil only when the credentials are
+// accepted. The web file browser uses this to authenticate members with their
+// webmail (Mailu/Dovecot) password — the same credential Roundcube uses.
+func VerifyLogin(addr, user, pass string, plaintext bool) error {
+	dial := imapclient.DialTLS
+	if plaintext {
+		dial = imapclient.DialInsecure
+	}
+	c, err := dial(addr, nil)
+	if err != nil {
+		return fmt.Errorf("imap dial %s: %w", addr, err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.Login(user, pass).Wait(); err != nil {
+		return fmt.Errorf("imap login: %w", err)
+	}
+	_ = c.Logout().Wait()
+	return nil
+}
+
 func (t *imapTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

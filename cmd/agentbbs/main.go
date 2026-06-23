@@ -258,6 +258,10 @@ func main() {
 	// Caddy proxies wss://host/play to it.
 	go a.serveGameWS(env("AGENTBBS_GAME_WS_ADDR", "127.0.0.1:8090"))
 
+	// Web file browser (files.<host>): webmail-password login over the same
+	// /me + /public storage as SFTP. Loopback; Caddy proxies files.<host> to it.
+	a.startFilesWeb()
+
 	// News (NNTP) server: the members-only Usenet network (docs/news.md). The
 	// loopback plaintext listener backs the in-BBS news@ reader; the public
 	// NNTPS listener (:563, TLS) serves desktop newsreaders and agents. Free for

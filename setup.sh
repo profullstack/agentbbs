@@ -31,6 +31,8 @@ SRC_DIR="${SRC_DIR:-/opt/agentbbs}"
 DATA_DIR="${DATA_DIR:-/var/lib/agentbbs}"
 ASK_ADDR="${ASK_ADDR:-127.0.0.1:8081}"   # agentbbs on-demand-TLS ask endpoint (must match agentbbs.env)
 HTTP_ADDR="${HTTP_ADDR:-127.0.0.1:8088}" # agentbbs /verify endpoint (join@ email confirmation links)
+FILES_WEB_ADDR="${FILES_WEB_ADDR:-127.0.0.1:8092}" # agentbbs web file browser (Caddy fronts files.${DOMAIN#*.})
+FILES_DOMAIN="${FILES_DOMAIN:-files.${DOMAIN#*.}}"  # web file browser host (default: files.<root-of-DOMAIN>)
 GO_VERSION="${GO_VERSION:-1.26.4}"
 POD_IMAGE="${POD_IMAGE:-docker.io/library/ubuntu:24.04}"
 FETCH_ASSETS="${FETCH_ASSETS:-1}"   # set 0 to skip the DOOM/Freedoom arcade assets
@@ -263,6 +265,20 @@ Invaders, Pac-Man, Tetris, Snake &amp; Hangman</b>.</p>
 (or the <b class="dim">Mail</b> entry in the hub). Premium members get a forwarding
 <code>name@${DOMAIN}</code> address.</p>
 
+<h2>IRC from a desktop client — irssi, HexChat, WeeChat</h2>
+<p class="dim">The members' IRC lives at <code>${IRC_DOMAIN}:6697</code> (TLS). Members authenticate with
+<b class="dim">SASL PLAIN</b>: <b class="dim">username = your BBS name</b>,
+<b class="dim">password = your IRC password</b>. The <a href="https://chat.${DOMAIN}">web client</a>
+(chat.${DOMAIN}) is already configured; for a desktop client, set it up once. <b class="dim">irssi:</b></p>
+<pre class="cmds"><b>/network add -sasl_username YOURNAME -sasl_password YOURPASSWORD -sasl_mechanism PLAIN ProfullstackBBS</b>
+<b>/server add -tls -tls_verify -network ProfullstackBBS ${IRC_DOMAIN} 6697</b>
+<b>/connect ProfullstackBBS</b>
+<span># then</span>  <b>/join #general</b></pre>
+<p class="dim">Connect by the <i>network name</i> <code>ProfullstackBBS</code> — not the hostname — or
+SASL isn't sent and the server replies <code>ACCOUNT_REQUIRED</code>. <b class="dim">HexChat /
+WeeChat:</b> server <code>${IRC_DOMAIN}/6697</code>, TLS on, SASL <b class="dim">PLAIN</b> with the
+same username + password.</p>
+
 <h2>Git, the easy way</h2>
 <p class="dim">Membership <i>is</i> your git account. The SSH key you sign in with is your push
 key — no passwords:</p>
@@ -356,6 +372,9 @@ AGENTBBS_ASK_ADDR=${ASK_ADDR}
 # https://${DOMAIN}/verify, which Caddy proxies to this loopback endpoint.
 # Without SMTP config the link is only logged (journalctl -u agentbbs).
 AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
+# Web file browser (https://${FILES_DOMAIN}): loopback server Caddy fronts.
+# Members sign in with their webmail password; same /me + /public as SFTP.
+AGENTBBS_FILES_WEB_ADDR=${FILES_WEB_ADDR}
 # AGENTBBS_SMTP_HOST=
 # AGENTBBS_SMTP_PORT=587
 # AGENTBBS_SMTP_USER=
@@ -670,6 +689,17 @@ ${MAIL_DOMAIN} {
 "
 fi
 
+# Web file browser (${FILES_DOMAIN}): Caddy terminates TLS and proxies to the
+# agentbbs loopback file-manager server. Members sign in with their webmail
+# password and browse the same /me + /public areas as SFTP. Needs A record
+# ${FILES_DOMAIN} -> this host. Disabled when AGENTBBS_FILES=0 (server not up).
+FILES_SITE="
+${FILES_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy http://${FILES_WEB_ADDR}
+}
+"
+
 cat > /etc/caddy/Caddyfile <<CADDY
 {
 	email ${ACME_EMAIL}
@@ -713,7 +743,7 @@ ${DOMAIN} {
 		file_server
 	}
 }
-${GIT_SITE}${NEWS_SITE}${IRC_SITE}${MAIL_SITE}
+${GIT_SITE}${NEWS_SITE}${IRC_SITE}${MAIL_SITE}${FILES_SITE}
 # Free per-user homepages at <name>.${DOMAIN} (needs wildcard DNS
 # *.${DOMAIN} -> this host). On-demand TLS mints a cert only when agentbbs's
 # ask endpoint confirms <name> is a registered member, so random subdomains
