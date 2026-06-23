@@ -368,10 +368,11 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 # AGENTBBS_SIGNUP_NOTIFY=anthony@profullstack.com
 
 # Membership model:
-#   Free   verified members get their own Docker pod (ssh pod@) and a homepage
-#          at https://${DOMAIN}/~<name>.
-#   Premium \$10 one-time, lifetime — a personal <name>@${DOMAIN} email
-#          (forwardemail.net) plus custom domains (ssh domain@). Offered at join@.
+#   Free   verified members get their own Docker pod (ssh pod@), a homepage at
+#          https://${DOMAIN}/~<name>, AND a real mailbox <name>@${DOMAIN} on the
+#          self-hosted Mailu stack (read it in the hub's "Mail" or via webmail).
+#   Premium \$10 one-time, lifetime — custom domains (ssh domain@) + a Tor shell.
+#          Offered at join@.
 
 # Premium payments hit the CoinPay REST API directly (no coinpay CLI needed):
 # join@ creates a charge and shows the amount + deposit address; a later connect
@@ -385,11 +386,16 @@ AGENTBBS_HTTP_ADDR=${HTTP_ADDR}
 # AGENTBBS_PREMIUM_CURRENCY=USD
 # AGENTBBS_PREMIUM_BLOCKCHAIN=eth
 
-# Premium email aliases (<name>@${DOMAIN}) auto-created on forwardemail.net.
-# Without an API key the address is shown but not created (add it manually).
-# AGENTBBS_FORWARDEMAIL_API_KEY=
-# AGENTBBS_FORWARDEMAIL_DOMAIN=${DOMAIN}
-# AGENTBBS_WEBMAIL_URL=https://webmail.${DOMAIN}
+# Member email (free for every verified member). Addresses are <name>@${DOMAIN}
+# (the address domain), while the Mailu server lives on the mail host below.
+# Mailboxes are auto-provisioned at join@ via the Mailu admin REST API: set the
+# API token (API_TOKEN in deploy/mailu/mailu.env). Without it the address is
+# shown but not created. See docs/mail.md.
+# AGENTBBS_MAIL_ADDR_DOMAIN=${DOMAIN}              # the @-part of member addresses
+# AGENTBBS_MAIL_ADMIN_URL=http://127.0.0.1:8080   # Mailu admin (loopback)
+# AGENTBBS_MAIL_API_TOKEN=<mailu API_TOKEN>
+# AGENTBBS_MAIL_QUOTA_BYTES=1073741824            # 1 GiB per mailbox
+# AGENTBBS_WEBMAIL_URL=https://${MAIL_DOMAIN}      # Roundcube (defaults to mail host)
 
 # AgentGit (git.profullstack.com): every verified member — free and paid alike —
 # is provisioned a Forgejo account when they confirm their email. The admin token
@@ -1059,17 +1065,19 @@ else
   systemctl disable --now forgejo >/dev/null 2>&1 || true
 fi
 
-# ---- 9e. Mailu mail stack (co-located mail.${DOMAIN#*.}) --------------------
+# ---- 9e. Mailu mail stack (server on ${MAIL_DOMAIN}) ------------------------
 # Self-hosted Postfix+Dovecot+Roundcube+rspamd via Docker Compose. Mailu owns
 # the mail ports; Caddy fronts the loopback webmail and supplies the TLS cert
-# (TLS_FLAVOR=mail). agentbbs reads/sends on behalf of paid members. Full setup,
-# DNS, and the gateway master user: docs/mail.md. Disable with MAIL=0.
+# (TLS_FLAVOR=mail). agentbbs reads/sends on behalf of EVERY verified member
+# (free + paid) — addresses are <name>@${DOMAIN}, the server is ${MAIL_DOMAIN}.
+# Full setup, DNS, and the gateway master user: docs/mail.md. Disable with MAIL=0.
 MAILU_DIR="${SRC_DIR}/deploy/mailu"
 if [ "$MAIL" = "1" ]; then
-  log "configuring Mailu mail stack (${MAIL_DOMAIN})"
-  # Tell agentbbs how to reach the mailbox backend (master user/pass are secrets
-  # the operator sets; see docs/mail.md).
+  log "configuring Mailu mail stack (server ${MAIL_DOMAIN}, addresses @${DOMAIN})"
+  # Tell agentbbs how to reach the mailbox backend (master user/pass + the Mailu
+  # API token are secrets the operator sets; see docs/mail.md).
   upsert_env AGENTBBS_MAIL_DOMAIN "${MAIL_DOMAIN}"
+  upsert_env AGENTBBS_MAIL_ADDR_DOMAIN "${DOMAIN}"
   upsert_env AGENTBBS_MAIL_IMAP_ADDR "${MAIL_DOMAIN}:993"
   upsert_env AGENTBBS_MAIL_SMTP_ADDR "127.0.0.1:25"
 

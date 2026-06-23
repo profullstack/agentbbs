@@ -15,7 +15,7 @@ func seeded() *MemoryTransport {
 }
 
 func paidClient(t Transport) *Client {
-	return NewClient(t, Identity{Name: "alice", Paid: true}, "mail.profullstack.com", 50)
+	return NewClient(t, Identity{Name: "alice", Paid: true}, "bbs.profullstack.com", 50)
 }
 
 func TestParseFormatAddress(t *testing.T) {
@@ -45,9 +45,15 @@ func TestValidEmailAndDraft(t *testing.T) {
 }
 
 func TestGate(t *testing.T) {
-	c := NewClient(seeded(), Identity{Name: "bob", Paid: false}, "mail.profullstack.com", 0)
-	if _, err := c.Inbox(context.Background(), 0); !errors.Is(err, ErrNotPaid) {
-		t.Fatalf("expected ErrNotPaid, got %v", err)
+	// A free member (Paid: false) now has full mail access.
+	c := NewClient(seeded(), Identity{Name: "bob", Paid: false}, "bbs.profullstack.com", 0)
+	if _, err := c.Inbox(context.Background(), 0); err != nil {
+		t.Fatalf("free member should have mail access, got %v", err)
+	}
+	// Only a caller without a registered handle is rejected.
+	anon := NewClient(seeded(), Identity{Name: "", Paid: true}, "bbs.profullstack.com", 0)
+	if _, err := anon.Inbox(context.Background(), 0); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("expected ErrNotMember, got %v", err)
 	}
 }
 
@@ -106,7 +112,7 @@ func TestSendAndReply(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 	sent, _ := tr.ListMessages(context.Background(), ListOptions{Mailbox: Sent})
-	if len(sent) != 1 || sent[0].From.Address != "alice@mail.profullstack.com" || sent[0].Subject != "Hi" {
+	if len(sent) != 1 || sent[0].From.Address != "alice@bbs.profullstack.com" || sent[0].Subject != "Hi" {
 		t.Fatalf("sent: %+v", sent)
 	}
 
