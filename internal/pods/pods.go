@@ -87,6 +87,30 @@ func (m *Manager) hasMount(name, dest string) bool {
 	return false
 }
 
+// hasImage reports whether the named container is running the given image.
+// Used to roll out a new pod image: a mismatch triggers an idle recreate so
+// members pick up added tooling without losing their home volume. A blank or
+// unresolvable image name is treated as a match (never heal on uncertainty).
+func (m *Manager) hasImage(name, image string) bool {
+	if image == "" {
+		return true
+	}
+	out, err := exec.Command(m.engine, "container", "inspect", "-f", "{{.ImageName}}", name).Output()
+	if err != nil {
+		return true
+	}
+	got := strings.TrimSpace(string(out))
+	// Normalize: inspect may report "localhost/agentbbs-pod:latest" while m.image
+	// is the same; also tolerate the docker.io/library/ prefix podman adds.
+	norm := func(s string) string {
+		s = strings.TrimPrefix(s, "docker.io/library/")
+		s = strings.TrimPrefix(s, "docker.io/")
+		s = strings.TrimPrefix(s, "localhost/")
+		return s
+	}
+	return norm(got) == norm(image)
+}
+
 // Engine reports the active container engine.
 func (m *Manager) Engine() string { return m.engine }
 
@@ -131,8 +155,13 @@ func (m *Manager) ensure(user string) (string, error) {
 		m.mu.Lock()
 		idle := m.attached[name] == 0
 		m.mu.Unlock()
-		if pubSpec != "" && idle && !m.hasMount(name, "/home/dev/public_html") {
-			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate with the bind
+		// Recreate an idle pod when it's missing the public_html bind OR is
+		// running an out-of-date image (e.g. a new pod image with added tooling).
+		// The home volume persists across rm, so member data is kept; a busy pod
+		// heals on its next idle attach instead.
+		needsHeal := idle && ((pubSpec != "" && !m.hasMount(name, "/home/dev/public_html")) || !m.hasImage(name, m.image))
+		if needsHeal {
+			_ = exec.Command(m.engine, "rm", "-f", name).Run() // fall through to recreate
 		} else {
 			_ = exec.Command(m.engine, "start", name).Run() // no-op if running
 			return name, nil

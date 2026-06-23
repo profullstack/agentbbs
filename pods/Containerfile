@@ -1,0 +1,45 @@
+# AgentBBS member pod image. Built on the host by setup.sh (rootless podman),
+# tagged localhost/agentbbs-pod:latest, and used for every member pod via
+# AGENTBBS_POD_IMAGE. Members get a full shell here (HOME=/home/dev, persisted
+# in a named volume; ~/public_html is bind-mounted to their website).
+#
+# Beyond a base Ubuntu it ships:
+#   - git + openssh-client      → push to git.profullstack.com (SSH-key auth)
+#   - Node.js (LTS)             → runtime for the AI coding CLIs
+#   - Claude Code + Codex CLIs  → `claude` and `codex`, BYO API key per user
+#
+# BYO key: nothing here carries credentials. A member exports their own
+# ANTHROPIC_API_KEY / OPENAI_API_KEY (or runs the tools' login flow); the keys
+# live in their persisted home, never in the image.
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg \
+      git openssh-client \
+      vim nano less ripgrep jq \
+ && install -d -m 0755 /usr/share/keyrings \
+ && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+      | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code @openai/codex \
+ && npm cache clean --force \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# A login hint so members know the AI tools are present and BYO-key.
+RUN printf '%s\n' \
+  'AgentBBS pod — coding tools ready:' \
+  '  claude   (Claude Code)  — export ANTHROPIC_API_KEY=... or run: claude' \
+  '  codex    (OpenAI Codex) — export OPENAI_API_KEY=...    or run: codex' \
+  '  git push → git@git.profullstack.com (your BBS SSH key is your git key)' \
+  > /etc/motd \
+ && printf '[ -n "$PS1" ] && [ -r /etc/motd ] && cat /etc/motd\n' \
+  > /etc/profile.d/10-agentbbs-motd.sh
+
+CMD ["sleep", "infinity"]
