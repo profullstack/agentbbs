@@ -24,6 +24,11 @@ type IMAPConfig struct {
 	// SMTPUser/SMTPPass default to Username/Password when empty.
 	SMTPUser string
 	SMTPPass string
+	// SMTPServerName is the TLS server name verified during STARTTLS. Set it when
+	// the dial host differs from the certificate name — e.g. dialing the trusted
+	// local relay at 127.0.0.1:25 whose cert is mail.<host>. Empty = use the dial
+	// host (the net/smtp default).
+	SMTPServerName string
 	// Plaintext dials IMAP without TLS. Used only for a co-located backend over
 	// loopback (the Mailu gateway hitting Dovecot directly on 127.0.0.1, bypassing
 	// the front's auth proxy so master-user login works) — the password never
@@ -219,7 +224,7 @@ func (t *imapTransport) Search(_ context.Context, opts SearchOptions) ([]Message
 func (t *imapTransport) Send(_ context.Context, from string, d Draft) (SendResult, error) {
 	msg, msgID := buildRFC822(from, d)
 	// SMTPUser may be empty for a trusted local relay (no AUTH).
-	if err := smtpSend(t.cfg.SMTPAddr, t.cfg.SMTPUser, t.cfg.SMTPPass, from, recipients(d), msg); err != nil {
+	if err := smtpSend(t.cfg.SMTPAddr, t.cfg.SMTPServerName, t.cfg.SMTPUser, t.cfg.SMTPPass, from, recipients(d), msg); err != nil {
 		return SendResult{}, fmt.Errorf("smtp send: %w", err)
 	}
 	// Best-effort copy to Sent so the message shows in the member's mailbox.

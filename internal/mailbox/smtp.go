@@ -2,6 +2,7 @@ package mailbox
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"mime"
 	"net"
@@ -65,17 +66,54 @@ func recipients(d Draft) []string {
 	return out
 }
 
-// smtpSend submits a built message via SMTP. With a non-empty user it does
-// STARTTLS + AUTH (e.g. smtp.profullstack.com:587); with an empty user it sends
-// unauthenticated, for a trusted local relay (e.g. the co-located Postfix).
-func smtpSend(addr, user, pass, from string, rcpts []string, msg []byte) error {
+// smtpSend submits a built message via SMTP. It does STARTTLS when the server
+// offers it, verifying the certificate against serverName (or the dial host when
+// serverName is empty) — this lets us dial a trusted local relay by IP/loopback
+// while still validating its real hostname certificate. A non-empty user adds
+// AUTH; an empty user sends unauthenticated, for a relay that trusts the source.
+//
+// This mirrors net/smtp.SendMail but with an overridable TLS ServerName, which
+// SendMail does not support (it pins ServerName to the dial host).
+func smtpSend(addr, serverName, user, pass, from string, rcpts []string, msg []byte) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("smtp addr %q: %w", addr, err)
 	}
-	var auth smtp.Auth
-	if user != "" {
-		auth = smtp.PlainAuth("", user, pass, host)
+	if serverName == "" {
+		serverName = host
 	}
-	return smtp.SendMail(addr, auth, from, rcpts, msg)
+	c, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial %s: %w", addr, err)
+	}
+	defer func() { _ = c.Close() }()
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: serverName}); err != nil {
+			return fmt.Errorf("smtp starttls (%s): %w", serverName, err)
+		}
+	}
+	if user != "" {
+		if err := c.Auth(smtp.PlainAuth("", user, pass, serverName)); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("smtp mail from: %w", err)
+	}
+	for _, rcpt := range rcpts {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("smtp rcpt %s: %w", rcpt, err)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp data: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp close: %w", err)
+	}
+	return c.Quit()
 }

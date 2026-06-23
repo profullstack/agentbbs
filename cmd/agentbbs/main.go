@@ -1481,8 +1481,12 @@ func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
 	cfg := mailbox.IMAPConfig{
 		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", a.mailHost+":993"),
 		SMTPAddr: env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"),
-		Username: login,
-		Password: os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+		// Dial the loopback relay but verify STARTTLS against the mail host, whose
+		// certificate it presents (the relay's cert is never for 127.0.0.1). This
+		// avoids the /etc/hosts loopback hack the transactional sender needs.
+		SMTPServerName: env("AGENTBBS_MAIL_SMTP_SERVERNAME", a.mailHost),
+		Username:       login,
+		Password:       os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
 		// Mailu's front nginx pre-authenticates against its user DB before
 		// proxying, which rejects the "<addr>*master" master login. The gateway
 		// therefore talks to Dovecot directly over loopback (plaintext, on-host)

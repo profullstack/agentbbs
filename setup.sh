@@ -1129,6 +1129,9 @@ if [ "$MAIL" = "1" ]; then
   upsert_env AGENTBBS_MAIL_IMAP_ADDR "127.0.0.1:14143"
   upsert_env AGENTBBS_MAIL_IMAP_PLAINTEXT "1"
   upsert_env AGENTBBS_MAIL_SMTP_ADDR "127.0.0.1:25"
+  # Dial the loopback relay but verify its STARTTLS cert against the mail host
+  # (its cert is for ${MAIL_DOMAIN}, never 127.0.0.1) — no /etc/hosts hack needed.
+  upsert_env AGENTBBS_MAIL_SMTP_SERVERNAME "${MAIL_DOMAIN}"
 
   # Cert refresher: copy Caddy's mail cert into Mailu on renewal (like news/IRC).
   install -m 0755 "${MAILU_DIR}/refresh-certs.sh" /usr/local/bin/agentbbs-mailu-certs
