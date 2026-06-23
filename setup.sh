@@ -53,7 +53,7 @@ ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
 FORGEJO="${FORGEJO:-1}"                  # set 0 to skip the AgentGit Forgejo backend (git.${DOMAIN#*.})
 GIT_DOMAIN="${GIT_DOMAIN:-git.${DOMAIN#*.}}"  # AgentGit host (default: git.<root-of-DOMAIN>, e.g. git.profullstack.com)
 FORGEJO_VERSION="${FORGEJO_VERSION:-11.0.1}"  # Forgejo release to install
-MAIL="${MAIL:-1}"                   # set 0 to skip the co-located Mailu mail stack (mail.${DOMAIN#*.})
+MAIL_STACK="${MAIL_STACK:-1}"       # set 0 to skip the co-located Mailu mail stack (mail.${DOMAIN#*.}). NOT named MAIL: that is a reserved env var (the mail-spool path, e.g. /var/mail/root) which PAM sets under sudo, so a CI deploy inherited MAIL=/var/mail/root and silently dropped the mail Caddy route + §9e provisioning.
 MAIL_DOMAIN="${MAIL_DOMAIN:-mail.${DOMAIN#*.}}"  # mail host (default: mail.<root-of-DOMAIN>, e.g. mail.profullstack.com)
 FORGEJO_HTTP_ADDR="${FORGEJO_HTTP_ADDR:-127.0.0.1:3000}"  # Forgejo loopback HTTP (Caddy fronts it)
 FORGEJO_DATA="${FORGEJO_DATA:-/var/lib/forgejo}"  # Forgejo state dir (repos, db)
@@ -681,9 +681,9 @@ fi
 # Mail site (${MAIL_DOMAIN}): Caddy serving this host obtains the LE cert that
 # Mailu reuses for SMTP/IMAP TLS (deploy/mailu/refresh-certs.sh copies it). It
 # also fronts the loopback Roundcube webmail. Needs A record ${MAIL_DOMAIN} ->
-# this host. Webmail is the only member-facing mail surface. Omitted when MAIL=0.
+# this host. Webmail is the only member-facing mail surface. Omitted when MAIL_STACK=0.
 MAIL_SITE=""
-if [ "$MAIL" = "1" ]; then
+if [ "$MAIL_STACK" = "1" ]; then
   MAIL_SITE="
 ${MAIL_DOMAIN} {
 	encode zstd gzip
@@ -1132,9 +1132,9 @@ fi
 # the mail ports; Caddy fronts the loopback webmail and supplies the TLS cert
 # (TLS_FLAVOR=mail). agentbbs reads/sends on behalf of EVERY verified member
 # (free + paid) — addresses are <name>@${DOMAIN}, the server is ${MAIL_DOMAIN}.
-# Full setup, DNS, and the gateway master user: docs/mail.md. Disable with MAIL=0.
+# Full setup, DNS, and the gateway master user: docs/mail.md. Disable with MAIL_STACK=0.
 MAILU_DIR="${SRC_DIR}/deploy/mailu"
-if [ "$MAIL" = "1" ]; then
+if [ "$MAIL_STACK" = "1" ]; then
   log "configuring Mailu mail stack (server ${MAIL_DOMAIN}, addresses @${DOMAIN})"
   # Tell agentbbs how to reach the mailbox backend (master user/pass + the Mailu
   # API token are secrets the operator sets; see docs/mail.md).
