@@ -90,7 +90,8 @@ Set these on the agentbbs service (setup.sh §9e upserts the non-secret ones):
 |---|---|
 | `AGENTBBS_MAIL_ADDR_DOMAIN` | `bbs.profullstack.com` |
 | `AGENTBBS_MAIL_DOMAIN` | `mail.profullstack.com` |
-| `AGENTBBS_MAIL_IMAP_ADDR` | `mail.profullstack.com:993` |
+| `AGENTBBS_MAIL_IMAP_ADDR` | `127.0.0.1:14143` (Dovecot direct, loopback) |
+| `AGENTBBS_MAIL_IMAP_PLAINTEXT` | `1` (the loopback path is plaintext) |
 | `AGENTBBS_MAIL_SMTP_ADDR` | `127.0.0.1:25` |
 | `AGENTBBS_MAIL_ADMIN_URL` | `http://127.0.0.1:8080` |
 | `AGENTBBS_MAIL_API_TOKEN` | the Mailu `API_TOKEN` (secret) |
@@ -101,6 +102,33 @@ Set these on the agentbbs service (setup.sh §9e upserts the non-secret ones):
 Without `AGENTBBS_MAIL_API_TOKEN` auto-provisioning is skipped (the address is
 still shown); without `AGENTBBS_MAIL_MASTER_PASS` the gateway can't open
 mailboxes.
+
+### Why the gateway talks to Dovecot directly (plaintext loopback)
+
+Mailu's **front** (nginx mail proxy) pre-authenticates every IMAP/SMTP login
+against Mailu's user DB before proxying to Dovecot — and it rejects the Dovecot
+master-user login form `<addr>*gateway`. So the gateway must reach **Dovecot
+directly**, bypassing the front. The `imap` container has no TLS cert (only the
+front does), so the bypass is plaintext over loopback — safe because the
+connection (and the master password) never leave the host. Wiring:
+
+- Publish Dovecot's IMAP on loopback (docker-compose.override.yml):
+  `imap.ports: ["127.0.0.1:14143:143"]`.
+- The Dovecot master user is defined in `data/overrides/dovecot/dovecot.conf`
+  (Mailu includes exactly that filename — *not* `*.conf`):
+
+  ```
+  auth_master_user_separator = *
+  passdb { driver = passwd-file; master = yes; args = /overrides/master-users }
+  ```
+
+  with `data/overrides/dovecot/master-users` holding `gateway:{SHA512-CRYPT}$6$…`
+  (the hash of `AGENTBBS_MAIL_MASTER_PASS`). The file must be **world-readable
+  (644)** — Dovecot reads it as a non-root user, and 640 root:root yields a
+  `temp_fail`. Do **not** add `result_success = continue` (that would also
+  require the target user's own password); the target mailbox comes from userdb.
+- Point the gateway at it: `AGENTBBS_MAIL_IMAP_ADDR=127.0.0.1:14143` +
+  `AGENTBBS_MAIL_IMAP_PLAINTEXT=1`.
 
 ## Sending mail from the BBS (verify codes + notifications)
 

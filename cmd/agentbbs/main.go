@@ -1355,6 +1355,11 @@ func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
 		SMTPAddr: env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"),
 		Username: login,
 		Password: os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+		// Mailu's front nginx pre-authenticates against its user DB before
+		// proxying, which rejects the "<addr>*master" master login. The gateway
+		// therefore talks to Dovecot directly over loopback (plaintext, on-host)
+		// when AGENTBBS_MAIL_IMAP_PLAINTEXT=1. See docs/mail.md.
+		Plaintext: os.Getenv("AGENTBBS_MAIL_IMAP_PLAINTEXT") == "1",
 		// SMTPUser/SMTPPass left empty: submit via the trusted local relay.
 	}
 	tr, err := mailbox.NewIMAPTransport(cfg)

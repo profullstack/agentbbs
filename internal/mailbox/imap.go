@@ -24,6 +24,11 @@ type IMAPConfig struct {
 	// SMTPUser/SMTPPass default to Username/Password when empty.
 	SMTPUser string
 	SMTPPass string
+	// Plaintext dials IMAP without TLS. Used only for a co-located backend over
+	// loopback (the Mailu gateway hitting Dovecot directly on 127.0.0.1, bypassing
+	// the front's auth proxy so master-user login works) — the password never
+	// leaves the host. Never enable it for a remote server.
+	Plaintext bool
 }
 
 // imapTransport is a Transport backed by a single authenticated IMAP connection
@@ -38,7 +43,11 @@ type imapTransport struct {
 
 // NewIMAPTransport dials the IMAP server, logs in, and returns a Transport.
 func NewIMAPTransport(cfg IMAPConfig) (Transport, error) {
-	c, err := imapclient.DialTLS(cfg.IMAPAddr, nil)
+	dial := imapclient.DialTLS
+	if cfg.Plaintext {
+		dial = imapclient.DialInsecure
+	}
+	c, err := dial(cfg.IMAPAddr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("imap dial %s: %w", cfg.IMAPAddr, err)
 	}
