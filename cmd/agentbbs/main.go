@@ -8,7 +8,10 @@
 //	                emailed code, then offers $99 Founding Lifetime (CoinPay)
 //	ssh pod@host    your personal Linux pod — free for verified members
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
-//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only)
+//	ssh <name>@host (from another account) prints a finger card for that member
+//	ssh msg@host U  leave member U a message: `ssh msg@host U hi` or pipe stdin
+//	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only;
+//	                sysop@/root@ are aliases)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
 //	                agent-vs-agent (also on wss://host/play). See docs/agentgames.md
 //
@@ -30,6 +33,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -59,11 +63,11 @@ import (
 	"github.com/profullstack/agentbbs/internal/chat"
 	"github.com/profullstack/agentbbs/internal/files"
 	"github.com/profullstack/agentbbs/internal/forgejo"
-	"github.com/profullstack/agentbbs/internal/forwardemail"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/mailbox"
+	"github.com/profullstack/agentbbs/internal/mailu"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -75,6 +79,8 @@ import (
 	"github.com/profullstack/agentbbs/plugins/about"
 	"github.com/profullstack/agentbbs/plugins/agentgames"
 	"github.com/profullstack/agentbbs/plugins/arcade"
+	"github.com/profullstack/agentbbs/plugins/hello"
+	"github.com/profullstack/agentbbs/plugins/members"
 	qryptinviteplugin "github.com/profullstack/agentbbs/plugins/qryptinvite"
 )
 
@@ -96,22 +102,25 @@ func envInt(k string, def int) int {
 }
 
 type app struct {
-	st       store.Store
-	pods     *pods.Manager // nil when no container engine on host
-	sites    *sites.Manager
-	registry []plugin.Plugin
-	sandbox  *sandbox.Runner
-	mail     mail.Config
-	fe       forwardemail.Config // premium @bbs email provisioning
-	forgejo  forgejo.Config      // AgentGit git.profullstack.com account provisioning
-	live     *liveReg            // in-memory live-session registry (admin console)
-	files    *files.Service      // SFTP file storage (nil when AGENTBBS_FILES=0)
-	gamesReg *games.Registry     // AgentGames catalog
-	mm       *games.Matchmaker   // AgentGames matchmaker (agent-vs-agent)
-	dataDir  string
-	assets   string
-	host     string // public hostname used in user-facing messages
-	newsAddr string // loopback NNTP address the news@ reader dials
+	st         store.Store
+	pods       *pods.Manager // nil when no container engine on host
+	sites      *sites.Manager
+	registry   []plugin.Plugin
+	sandbox    *sandbox.Runner
+	mail       mail.Config
+	mailu      *mailu.Client     // member mailbox provisioning (nil when unconfigured)
+	mailDomain string            // email address domain, e.g. bbs.profullstack.com
+	mailHost   string            // mail server host (IMAP/SMTP), e.g. mail.profullstack.com
+	webmailURL string            // webmail (Roundcube) URL shown to members
+	forgejo    forgejo.Config    // AgentGit git.profullstack.com account provisioning
+	live       *liveReg          // in-memory live-session registry (admin console)
+	files      *files.Service    // SFTP file storage (nil when AGENTBBS_FILES=0)
+	gamesReg   *games.Registry   // AgentGames catalog
+	mm         *games.Matchmaker // AgentGames matchmaker (agent-vs-agent)
+	dataDir    string
+	assets     string
+	host       string // public hostname used in user-facing messages
+	newsAddr   string // loopback NNTP address the news@ reader dials
 }
 
 // Version is the agentbbs stack release, surfaced via `agentbbs version` and
@@ -158,28 +167,34 @@ func main() {
 	}
 
 	host := env("AGENTBBS_HOST", "bbs.profullstack.com")
-	fe := forwardemail.ConfigFromEnv()
-	if fe.Domain == "" {
-		// Member mailboxes live on a dedicated mail subdomain (mail.profullstack.com),
-		// not the BBS host and not the apex (which is reserved for corporate mail).
-		fe.Domain = env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
+	// Member email addresses are <name>@<addr-domain> (e.g. bbs.profullstack.com).
+	// The mail server (IMAP/SMTP/webmail) lives on a dedicated host
+	// (mail.profullstack.com); the apex is reserved for corporate mail.
+	mailHost := env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
+	mailDomain := env("AGENTBBS_MAIL_ADDR_DOMAIN", host)
+	mailuClient := mailu.NewFromEnv()
+	if !mailuClient.Configured() {
+		mailuClient = nil
 	}
 	a := &app{
-		st:      st,
-		sandbox: sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
-		mail:    mail.ConfigFromEnv(),
-		fe:      fe,
-		forgejo: forgejo.ConfigFromEnv(),
-		live:    newLiveReg(),
-		dataDir: dataDir,
-		assets:  env("AGENTBBS_ASSETS", "./assets"),
-		host:    host,
+		st:         st,
+		sandbox:    sandbox.New(sandbox.Mode(env("AGENTBBS_SANDBOX", "auto"))),
+		mail:       mail.ConfigFromEnv(),
+		mailu:      mailuClient,
+		mailDomain: mailDomain,
+		mailHost:   mailHost,
+		webmailURL: env("AGENTBBS_WEBMAIL_URL", "https://"+mailHost),
+		forgejo:    forgejo.ConfigFromEnv(),
+		live:       newLiveReg(),
+		dataDir:    dataDir,
+		assets:     env("AGENTBBS_ASSETS", "./assets"),
+		host:       host,
 	}
 	a.gamesReg = games.Catalog()
 	a.mm = games.NewMatchmaker(a.gamesReg, a.st,
 		time.Duration(envInt("AGENTBBS_GAME_MOVE_TIMEOUT", 15))*time.Second,
 		time.Duration(envInt("AGENTBBS_GAME_QUEUE_WAIT", 120))*time.Second)
-	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), qryptinviteplugin.Plugin{}, about.Plugin{}}
+	a.registry = []plugin.Plugin{arcade.Plugin{}, agentgames.New(a.gamesReg), members.Plugin{}, qryptinviteplugin.Plugin{}, about.Plugin{}, hello.Plugin{}}
 
 	// Files (SFTP): per-user workspaces + a shared public area, reached over the
 	// :22 listener via `sftp files@<host>` (docs/files.md). Disable with
@@ -352,6 +367,8 @@ func (a *app) router() wish.Middleware {
 				a.handleMail(s)
 			case auth.IsFilesAdminName(user):
 				filesAdminHandler(s)
+			case auth.IsMsgName(user):
+				a.handleMsg(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -379,7 +396,11 @@ func (a *app) hubMOTD(u auth.User) string {
 		return "You're browsing as a guest.\n" + body +
 			"\nssh join@" + a.host + " to claim a username, a pod & a homepage."
 	}
-	return "Welcome back, " + u.Name + ".\n" + body
+	welcome := "Welcome back, " + u.Name + "."
+	if n, err := a.st.UnreadCount(u.Name); err == nil && n > 0 {
+		welcome += fmt.Sprintf("  📬 %d unread — open Members ▸ inbox (i).", n)
+	}
+	return welcome + "\n" + body
 }
 
 // teaHandler builds the hub model for guests, members, and agents.
@@ -423,12 +444,22 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		// provisions their @host email alias on the transition).
 		a.ensurePremium(&su)
 		u = auth.User{Name: su.Name, Kind: auth.Kind(su.Kind), PubKeyFP: fp, StoreID: su.ID}
+		// Backfill the git.profullstack.com account + SSH key on login. Idempotent
+		// and off the hot path: members who verified before AgentGit existed (or
+		// before their key was registered) get provisioned on their next visit.
+		if su.EmailVerified {
+			suCopy, key := su, authorizedKey(s)
+			go a.provisionGit(&suCopy, key)
+		}
 	}
 
 	sessID, _ := a.st.RecordSession(u.StoreID, s.User(), remoteIP(s), "hub")
 	go func() { <-s.Context().Done(); _ = a.st.EndSession(sessID) }()
 
-	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets}
+	ctx := plugin.Context{Store: a.st, Sandbox: a.sandbox, AssetsDir: a.assets, Host: a.host}
+	if pty, _, ok := s.Pty(); ok {
+		ctx.Term = pty.Term // ncurses arcade games need the client's TERM
+	}
 	if u.Kind != auth.Guest {
 		ctx.DataDir = filepath.Join(a.dataDir, "users", u.Name)
 		_ = os.MkdirAll(filepath.Join(ctx.DataDir, "wads"), 0o755)
@@ -498,19 +529,22 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 		Cmd:         sessionExec{run: func() error { return a.runNews(s, su.Name) }},
 	})
 
-	// Mail — a Founding Lifetime Member perk: the AgentMail TUI.
+	// Mail — a free benefit of membership: the AgentMail TUI for your
+	// <name>@<mailDomain> mailbox.
 	mailLock := ""
 	switch {
 	case guest:
 		mailLock = membersOnly
-	case !su.Premium:
-		mailLock = "Founding Lifetime Member feature ($99 one-time) — upgrade: ssh join@" + a.host
+	case !a.mailEnabled():
+		mailLock = "mail is temporarily unavailable on this host"
 	}
 	apps = append(apps, hub.SessionApp{
 		Title:       "Mail",
-		Description: "your " + a.fe.Domain + " mailbox",
+		Description: "your " + a.mailAddress(su.Name) + " mailbox",
 		Locked:      mailLock,
 		Cmd: sessionExec{run: func() error {
+			// Make sure the mailbox exists before opening it.
+			_ = a.ensureMailbox(su)
 			c, err := a.mailClientFor(su)
 			if err != nil {
 				return err
@@ -625,7 +659,7 @@ func (a *app) handleJoin(s ssh.Session) {
 	}, "\n"))
 
 	// 1) email -> emailed code -> enter code. A verified account is a free
-	// member: it gets a Docker pod, IRC/news, and a /~name homepage, all from the hub.
+	// member: it gets a Docker pod, a mailbox, IRC/news, and a /~name homepage.
 	if !u.EmailVerified {
 		if !a.verifyEmailInteractive(s, in, &u) {
 			_ = s.Exit(1)
@@ -634,22 +668,41 @@ func (a *app) handleJoin(s ssh.Session) {
 		a.notifySignup(u)
 	}
 
-	// Every verified member gets a homepage at https://<host>/~<name>.
+	// Every verified member gets a homepage at https://<host>/~<name> and a
+	// mailbox at <name>@<mailDomain> (best-effort; mail is a bonus, never a gate).
 	seedHomepage(filepath.Join(a.dataDir, "users", u.Name, "public_html"), u.Name, a.host)
+	_ = a.ensureMailbox(u)
+	// Give them a webmail password so free members can log into webmail. The
+	// in-BBS reader uses the gateway master user and needs no password, but
+	// Roundcube does. (Re)set on each join@; they can change it in webmail.
+	webmailPW := a.setWebmailPassword(u)
 
-	wish.Println(s, "\n"+strings.Join([]string{
+	includes := []string{
 		"  You're in. One login gets you everything — no other servers to ssh into:",
 		"",
 		"    ssh " + u.Name + "@" + a.host,
 		"",
 		"  Inside, free membership includes:",
 		"    • your own Linux pod (a full shell)",
+		"    • email           " + a.mailAddress(u.Name) + "  (pick “Mail” in the hub)",
 		"    • IRC chat + Usenet/news (members-only)",
 		"    • the arcade & games",
 		"    • your homepage   https://" + a.host + "/~" + u.Name,
-	}, "\n"))
+	}
+	if a.webmailURL != "" && webmailPW != "" {
+		includes = append(includes,
+			"",
+			"  Webmail (read your mail in a browser):",
+			"    • url        "+a.webmailURL,
+			"    • login      "+a.mailAddress(u.Name),
+			"    • password   "+webmailPW+"   (change it in webmail Settings)",
+		)
+	} else if a.webmailURL != "" {
+		includes = append(includes, "    • webmail         "+a.webmailURL)
+	}
+	wish.Println(s, "\n"+strings.Join(includes, "\n"))
 
-	// 2) Founding Lifetime ($99 one-time): personal @host email + custom domains.
+	// 2) Founding Lifetime ($99 one-time): custom domains + Tor shell.
 	a.offerPremium(s, &u)
 	_ = s.Exit(0)
 }
@@ -799,7 +852,7 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 		}
 		if ok {
 			*u = vu
-			a.provisionGit(u)
+			a.provisionGit(u, authorizedKey(s))
 			wish.Println(s, "  Email confirmed ✓")
 			return true
 		}
@@ -809,10 +862,11 @@ func (a *app) verifyEmailInteractive(s ssh.Session, in *bufio.Reader, u *store.U
 	return false
 }
 
-// ensurePremium upgrades *u to premium if its CoinPay charge has settled,
-// provisioning the member's @host email alias on the transition. It is silent
-// (no session output) so it is safe to call from the hub. Returns the current
-// premium state.
+// ensurePremium upgrades *u to premium if its CoinPay charge has settled. It is
+// silent (no session output) so it is safe to call from the hub. Returns the
+// current premium state. Email is no longer a premium perk — every verified
+// member gets a mailbox (see ensureMailbox) — so this only unlocks custom
+// domains and the Tor shell.
 func (a *app) ensurePremium(u *store.User) bool {
 	if u.Premium {
 		return true
@@ -829,23 +883,12 @@ func (a *app) ensurePremium(u *store.User) bool {
 		return false
 	}
 	u.Premium = true
-	// Create their <name>@host alias forwarding to the email they verified, then
-	// email that address their new mailbox details + webmail link.
-	if a.fe.Configured() && u.Email != "" {
-		if err := a.fe.CreateAlias(u.Name, u.Email); err != nil {
-			log.Error("forwardemail alias", "err", err, "alias", a.fe.Address(u.Name))
-		} else if a.mail.Configured() {
-			if err := a.mail.Send(u.Email, "Your "+a.fe.Domain+" mailbox is ready",
-				mailWelcomeEmailBody(u.Name, a.fe.Address(u.Name), a.fe.WebmailURL())); err != nil {
-				log.Error("mail welcome email", "user", u.Name, "err", err)
-			}
-		}
-	}
 	return true
 }
 
 // mailWelcomeEmailBody is the plain-text email sent when a member's @host
-// mailbox alias is provisioned: their new address and the webmail link.
+// mailbox alias is provisioned: their new address and the webmail link. Used by
+// the `notify-creds` backfill command (see notifycreds.go).
 func mailWelcomeEmailBody(name, address, webmail string) string {
 	b := "Hi " + name + ",\n\n" +
 		"Your member mailbox is live:\n\n" +
@@ -859,24 +902,22 @@ func mailWelcomeEmailBody(name, address, webmail string) string {
 	return b
 }
 
-// showPremiumWelcome prints a premium member's perks: their mailbox, the webmail
-// URL, the in-hub Mail/Tor entries, and custom domains.
+// showPremiumWelcome prints a premium member's perks: custom domains and the
+// in-hub Tor shell. (Email is free for all members — see the join@ summary.)
 func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 	lines := []string{
 		"",
-		"  ★ Founding Lifetime Member — thanks! Your perks:",
+		"  ★ Founding Lifetime Member — thanks! Your bonus perks:",
 		"",
-		"  mailbox    " + a.fe.Address(u.Name),
-		"  webmail    https://" + a.fe.Domain,
-		"  mail/tor   pick “Mail” or “Tor shell” in the hub: ssh " + u.Name + "@" + a.host,
 		"  domains    ssh domain@" + a.host + " add <yourdomain.com>",
+		"  tor        pick “Tor shell” in the hub: ssh " + u.Name + "@" + a.host,
 		"",
 	}
 	wish.Println(s, strings.Join(lines, "\n"))
 }
 
-// offerPremium pitches the $99 Founding Lifetime membership — a personal @host email and
-// custom domains. When CoinPay can mint a charge in-session it shows the exact
+// offerPremium pitches the $99 Founding Lifetime membership — custom domains and
+// the Tor shell. When CoinPay can mint a charge in-session it shows the exact
 // amount and deposit address; otherwise it falls back to a pay command.
 // Non-blocking: the member pays out of band and perks unlock on their next
 // connect (or re-running join@).
@@ -893,9 +934,9 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		"  ★ Founding Lifetime Member — $" + payments.PremiumAmount() + ", one-time",
 		"    Only the first " + payments.FoundingCap + " accounts. Pay once, keep it for life.",
 		"",
-		"  Everything in your free membership stays free — founding adds these",
-		"  bonus features, forever:",
-		"    • your own mailbox  " + a.fe.Address(u.Name) + "  (webmail: https://" + a.fe.Domain + ")",
+		"  Everything in your free membership stays free — including your",
+		"  " + a.mailAddress(u.Name) + " mailbox. Founding adds these bonus",
+		"  features, forever:",
 		"    • custom domains    point yourdomain.com at your homepage",
 		"    • Tor               a “Tor shell” in your pod — everything over Tor",
 		"    • locked-in price   founding rate is yours for life — never renew, never pay again",
@@ -995,7 +1036,7 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 			"Run <code>ssh join@"+a.host+"</code> to get a fresh confirmation link.")))
 		return
 	}
-	a.provisionGit(&u)
+	a.provisionGit(&u, "") // web flow: no SSH session key; key is added on next BBS login
 	_, _ = w.Write([]byte(verifyPage("Email confirmed ✓",
 		"Welcome, "+u.Name+". Your account is active — <code>ssh "+u.Name+"@"+a.host+"</code>.")))
 }
@@ -1005,7 +1046,7 @@ func (a *app) handleVerify(w http.ResponseWriter, r *http.Request) {
 // alike; plan only affects quotas, enforced by AgentGit, not account existence.
 // Failures are logged but never block BBS verification, and it is a no-op when
 // Forgejo is unconfigured.
-func (a *app) provisionGit(u *store.User) {
+func (a *app) provisionGit(u *store.User, pubKey string) {
 	if u == nil || !a.forgejo.Configured() || u.Name == "" || u.Email == "" {
 		return
 	}
@@ -1018,6 +1059,15 @@ func (a *app) provisionGit(u *store.User) {
 		return
 	}
 	log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
+	// Register the BBS SSH key so the member can push with the same key they sign
+	// in with. No-op when called without a session key (e.g. the web verify flow).
+	if pubKey != "" {
+		if added, err := a.forgejo.EnsureKey(u.Name, "agentbbs", pubKey); err != nil {
+			log.Error("forgejo ssh key", "user", u.Name, "err", err)
+		} else if added {
+			log.Info("registered git ssh key", "user", u.Name)
+		}
+	}
 	// Email the verified address their web sign-in link + one-time password so
 	// they can log in to the Forgejo UI and create repositories. Best-effort:
 	// the account already exists, so a mail failure must not block anything.
@@ -1030,8 +1080,9 @@ func (a *app) provisionGit(u *store.User) {
 }
 
 // gitWelcomeEmailBody is the plain-text email sent when a member's AgentGit
-// (Forgejo) account is created: web login link, username, and the one-time
-// password they must change on first sign-in.
+// (Forgejo) account is created or reset — on provisioning and by the
+// notify-creds ops command: web login link, username, and the one-time password
+// they must change on first sign-in.
 func gitWelcomeEmailBody(name, password, loginURL string) string {
 	return "Hi " + name + ",\n\n" +
 		"Your git account is ready. Sign in to the web interface here:\n\n" +
@@ -1042,6 +1093,16 @@ func gitWelcomeEmailBody(name, password, loginURL string) string {
 		"After that, click the \"+\" (top right) → \"New Repository\" to create repos.\n\n" +
 		"Pushing over git uses your registered SSH key — no password needed.\n\n" +
 		"If you didn't request this, you can ignore this email.\n"
+}
+
+// authorizedKey renders the session's public key as a single authorized_keys
+// line, or "" when the session has no key (guests / keyboard-interactive).
+func authorizedKey(s ssh.Session) string {
+	pk := s.PublicKey()
+	if pk == nil {
+		return ""
+	}
+	return strings.TrimSpace(string(gossh.MarshalAuthorizedKey(pk)))
 }
 
 // verifyPage renders the minimal confirmation result page.
@@ -1341,29 +1402,95 @@ func (a *app) runNews(s ssh.Session, name string) error {
 	return news.RunReader(s, addr, name)
 }
 
-// mailClientFor builds a paid-gated AgentMail client for a member, connecting to
-// the self-hosted Mailu backend. IMAP uses Dovecot master-user auth (login
-// "<name>*<master>") so the BBS gateway can open any member's mailbox with one
-// secret; SMTP defaults to the co-located relay (no auth). Returns an error if
-// the IMAP connection/login fails.
+// mailAddress is a member's email address, e.g. alice@bbs.profullstack.com.
+func (a *app) mailAddress(name string) string { return name + "@" + a.mailDomain }
+
+// mailEnabled reports whether member mailboxes can be provisioned (Mailu admin
+// API configured). When false the address is still shown but not created.
+func (a *app) mailEnabled() bool { return a.mailu.Configured() }
+
+// ensureMailbox provisions the member's <name>@<mailDomain> mailbox on Mailu if
+// it doesn't already exist. Idempotent and best-effort: it logs and returns the
+// error but callers treat mail as a bonus that shouldn't block onboarding. A
+// no-op when Mailu isn't configured.
+func (a *app) ensureMailbox(u store.User) error {
+	if !a.mailEnabled() || u.Name == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.mailu.EnsureUser(ctx, u.Name, a.mailDomain); err != nil {
+		log.Error("provision mailbox", "err", err, "address", a.mailAddress(u.Name))
+		return err
+	}
+	return nil
+}
+
+// setWebmailPassword sets (and returns) a fresh webmail password for the member
+// so free members can log into webmail. Best-effort: returns "" when Mailu isn't
+// configured or the API call fails. The in-BBS reader doesn't use this (it goes
+// through the gateway master user); only webmail needs a member password.
+func (a *app) setWebmailPassword(u store.User) string {
+	if !a.mailEnabled() || u.Name == "" {
+		return ""
+	}
+	pw := readablePassword()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.mailu.SetPassword(ctx, u.Name, a.mailDomain, pw); err != nil {
+		log.Error("set webmail password", "err", err, "address", a.mailAddress(u.Name))
+		return ""
+	}
+	return pw
+}
+
+// readablePassword returns a 16-char password from an unambiguous alphabet (no
+// 0/O/1/l/I) — easy to read off a terminal once and type into webmail.
+func readablePassword() string {
+	const alphabet = "abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789"
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to a hex token; correctness over readability.
+		var f [12]byte
+		_, _ = rand.Read(f[:])
+		return hex.EncodeToString(f[:])
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b[:])
+}
+
+// mailClientFor builds an AgentMail client for a member, connecting to the
+// self-hosted Mailu backend. IMAP uses Dovecot master-user auth (login
+// "<addr>*<master>") so the BBS gateway can open any member's mailbox with one
+// secret; SMTP defaults to the co-located relay (no auth). The client stamps
+// outgoing mail with the member's <name>@<mailDomain> address. Returns an error
+// if the IMAP connection/login fails.
 func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
-	domain := env("AGENTBBS_MAIL_DOMAIN", "mail.profullstack.com")
-	login := su.Name
+	// Mailu keys mailboxes by full address, so the IMAP login (and the master
+	// login "<addr>*<master>") must use the address, not the bare handle.
+	login := a.mailAddress(su.Name)
 	if master := os.Getenv("AGENTBBS_MAIL_MASTER_USER"); master != "" {
-		login = su.Name + "*" + master
+		login = a.mailAddress(su.Name) + "*" + master
 	}
 	cfg := mailbox.IMAPConfig{
-		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", domain+":993"),
+		IMAPAddr: env("AGENTBBS_MAIL_IMAP_ADDR", a.mailHost+":993"),
 		SMTPAddr: env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"),
 		Username: login,
 		Password: os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+		// Mailu's front nginx pre-authenticates against its user DB before
+		// proxying, which rejects the "<addr>*master" master login. The gateway
+		// therefore talks to Dovecot directly over loopback (plaintext, on-host)
+		// when AGENTBBS_MAIL_IMAP_PLAINTEXT=1. See docs/mail.md.
+		Plaintext: os.Getenv("AGENTBBS_MAIL_IMAP_PLAINTEXT") == "1",
 		// SMTPUser/SMTPPass left empty: submit via the trusted local relay.
 	}
 	tr, err := mailbox.NewIMAPTransport(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return mailbox.NewClient(tr, mailbox.Identity{Name: su.Name, Paid: su.Premium}, domain, 50), nil
+	return mailbox.NewClient(tr, mailbox.Identity{Name: su.Name, Paid: su.Premium}, a.mailDomain, 50), nil
 }
 
 // handleMail routes a Founding Lifetime member into AgentMail: an interactive
@@ -1387,11 +1514,18 @@ func (a *app) handleMail(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
-	if !a.ensurePremium(&u) {
-		wish.Println(s, "  mail is a Founding Lifetime Member feature ($99 one-time). Upgrade: ssh join@"+a.host)
+	if !u.EmailVerified {
+		wish.Println(s, "  verify your email first: ssh -t join@"+a.host)
 		_ = s.Exit(1)
 		return
 	}
+	if !a.mailEnabled() {
+		wish.Println(s, "  mail is temporarily unavailable on this host.")
+		_ = s.Exit(1)
+		return
+	}
+	// Mail is a free benefit of membership — make sure the mailbox exists.
+	_ = a.ensureMailbox(u)
 	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "mail")
 	defer func() { _ = a.st.EndSession(sessID) }()
 
@@ -1499,6 +1633,62 @@ func (a *app) handleChat(s ssh.Session) {
 	if err := chat.Handle(s, a.st, u); err != nil {
 		wish.Println(s, "chat: "+err.Error())
 	}
+}
+
+// handleMsg is the member-to-member messaging route: `ssh msg@host <user> [text]`
+// leaves a note in <user>'s BBS inbox. The body is the remaining args, or stdin
+// when none are given (so `echo hi | ssh msg@host bob` works). Members only;
+// the recipient reads it in the hub's Members ▸ inbox.
+func (a *app) handleMsg(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "msg@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	from, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	args := s.Command()
+	if len(args) == 0 {
+		wish.Println(s, "usage: ssh msg@"+a.host+" <user> [message]   (or pipe the message on stdin)")
+		_ = s.Exit(1)
+		return
+	}
+	to := strings.ToLower(args[0])
+	recipient, ok, err := a.st.UserByName(to)
+	if err != nil || !ok {
+		wish.Println(s, "no member named "+to+" — check the spelling (ssh "+to+"@"+a.host+" to finger).")
+		_ = s.Exit(1)
+		return
+	}
+	if recipient.Name == from.Name {
+		wish.Println(s, "you can't message yourself.")
+		_ = s.Exit(1)
+		return
+	}
+	body := strings.TrimSpace(strings.Join(args[1:], " "))
+	if body == "" {
+		// No inline text — read the message from stdin (piped, or typed then ^D).
+		b, _ := io.ReadAll(io.LimitReader(s, 64*1024))
+		body = strings.TrimSpace(string(b))
+	}
+	if body == "" {
+		wish.Println(s, "empty message — nothing sent.")
+		_ = s.Exit(1)
+		return
+	}
+	if err := a.st.SendMessage(from.Name, recipient.Name, body); err != nil {
+		wish.Println(s, "could not send: "+err.Error())
+		_ = s.Exit(1)
+		return
+	}
+	_, _ = a.st.RecordSession(from.ID, s.User(), remoteIP(s), "msg")
+	wish.Println(s, "✓ message left for "+recipient.Name+" — they'll see it in Members ▸ inbox.")
+	_ = s.Exit(0)
 }
 
 // handleFinger prints a classic finger card when someone ssh's to an

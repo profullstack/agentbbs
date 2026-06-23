@@ -142,6 +142,58 @@ func (c Config) EnsureUserReset(username, email string) (created bool, password 
 	return false, pw, nil
 }
 
+// EnsureKey registers an SSH public key on the member's Forgejo account so the
+// key they use for the BBS is also their git push key ("BBS membership is the
+// git account"). It is idempotent: added is false when the same key material is
+// already present. A blank key is a no-op. title labels the key in Forgejo.
+func (c Config) EnsureKey(username, title, pubKey string) (added bool, err error) {
+	if !c.Configured() {
+		return false, fmt.Errorf("forgejo not configured")
+	}
+	pubKey = strings.TrimSpace(pubKey)
+	if pubKey == "" {
+		return false, nil
+	}
+
+	// Skip if this key (ignoring the trailing comment) is already on the account.
+	if status, resp, e := c.do(http.MethodGet, "/users/"+username+"/keys", nil); e == nil && status == http.StatusOK {
+		var keys []struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal([]byte(resp), &keys) == nil {
+			want := keyMaterial(pubKey)
+			for _, k := range keys {
+				if keyMaterial(k.Key) == want {
+					return false, nil
+				}
+			}
+		}
+	}
+
+	body, _ := json.Marshal(map[string]any{"title": title, "key": pubKey, "read_only": false})
+	status, resp, err := c.do(http.MethodPost, "/admin/users/"+username+"/keys", body)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusUnprocessableEntity {
+		return false, nil // key already exists (raced or comment differs)
+	}
+	if status < 200 || status >= 300 {
+		return false, fmt.Errorf("forgejo add key %q: %d: %s", username, status, truncate(resp, 200))
+	}
+	return true, nil
+}
+
+// keyMaterial returns the type+base64 of an authorized-key line, dropping the
+// optional comment so the same key compares equal regardless of how it's labeled.
+func keyMaterial(authorizedKey string) string {
+	f := strings.Fields(strings.TrimSpace(authorizedKey))
+	if len(f) >= 2 {
+		return f[0] + " " + f[1]
+	}
+	return strings.TrimSpace(authorizedKey)
+}
+
 // userExists reports whether a Forgejo user with this name is present.
 func (c Config) userExists(username string) (bool, error) {
 	status, resp, err := c.do(http.MethodGet, "/users/"+username, nil)

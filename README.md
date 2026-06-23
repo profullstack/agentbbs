@@ -123,17 +123,18 @@ name is an existing AgentBBS member (registration is off — your BBS account *i
 your IRC identity):
 
 ```bash
-# zero-setup: built-in client over SSH (members only)
-ssh -t irc@bbs.profullstack.com
-# native client — SASL account = your BBS member name
+# native TLS client — SASL account = your BBS member name
 /connect irc.bbs.profullstack.com 6697
 # browser / agent over WebSocket
 wss://bbs.profullstack.com/irc
 ```
 
-`ssh irc@` is a built-in IRC client (`internal/irc`) that authenticates you to
-the network automatically — no client to install. Set `IRC=0` to skip the
-server. Full details: [`docs/irc.md`](docs/irc.md).
+Members connect with **their own IRC client** (or a web client) — there is no
+in-BBS `ssh irc@` route. The network is **members-only** and every client must
+authenticate with SASL using their BBS account name (any passphrase — membership
+is the credential). Set `IRC=0` to skip the server.
+
+Full details: [`docs/irc.md`](docs/irc.md).
 
 ### News (Usenet) server
 

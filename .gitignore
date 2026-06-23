@@ -6,5 +6,11 @@
 *.log
 .env
 
+# Mailu runtime: secrets, local network override, and state
+deploy/mailu/mailu.env
+deploy/mailu/docker-compose.override.yml
+deploy/mailu/data/
+deploy/mailu/certs/
+
 # Claude Code local worktrees/state
 .claude/

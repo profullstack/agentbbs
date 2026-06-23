@@ -17,6 +17,20 @@ The username (`files`) is conventional and ignored — **identity is your SSH
 key** (one key = one account, like the rest of the BBS). `scp`/`rsync` work
 because they tunnel over the same SSH transport.
 
+## Who can use it
+
+**Members only — but free for every member.** Like IRC and News, file storage is
+gated on membership, *not* on the paid Founding Lifetime plan:
+
+- **Non-members can't connect.** A key that isn't a registered account is
+  refused at the SFTP handshake (`this key isn't a member — register first`), and
+  guests don't see the in-hub Files browser.
+- **Every verified member can connect, run, and join** — free and paid alike.
+  There is no Premium gate anywhere in the Files path; the plan only affects
+  unrelated perks (custom email, domains, Tor).
+- Operators can revoke an individual account's SFTP access (abuse response)
+  without touching its BBS login — see the management TUI below.
+
 ## Two areas
 
 When you connect you see a virtual root with two directories:

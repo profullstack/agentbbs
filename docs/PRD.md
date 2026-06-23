@@ -210,6 +210,10 @@ directly over SFTP with the member's existing SSH login key.
   member reaches their private files with the same key they log in with
   (`sftp files@bbs.profullstack.com`). `scp`/`rsync -e ssh` work over the same
   endpoint.
+- **Eligibility:** members-only, **free for every member** (free and paid alike,
+  like IRC and News — not a Premium-gated perk). Non-members are refused at the
+  handshake; guests don't see the in-BBS browser. Operators can revoke an
+  individual account's SFTP access without affecting its BBS login.
 - **In-BBS view:** a TUI file browser for the user's own workspace and the
   shared area (list, rename, delete, up/download path, view usage vs. quota).
 - **Operator TUI:** an admin management surface for the SFTP server — list

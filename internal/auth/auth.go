@@ -43,8 +43,9 @@ var DomainNames = map[string]bool{"domain": true, "domains": true}
 
 // AdminNames are usernames that route to the privileged admin console (PRD §6).
 // The route only opens for accounts whose name is in the operator allowlist
-// (see IsAdmin); the name itself confers nothing.
-var AdminNames = map[string]bool{"admin": true, "sysop": true}
+// (see IsAdmin); the name itself confers nothing — so "root" is just a familiar
+// alias here, not a backdoor.
+var AdminNames = map[string]bool{"admin": true, "sysop": true, "root": true}
 
 // TorURLNames route to the one-shot "fetch a URL over Tor" command (premium).
 var TorURLNames = map[string]bool{"tor-url": true}
@@ -112,6 +113,13 @@ func IsMailName(u string) bool { return MailNames[strings.ToLower(u)] }
 // management TUI (operator-gated).
 func IsFilesAdminName(u string) bool { return FilesAdminNames[strings.ToLower(u)] }
 
+// MsgNames route a member-to-member message: `ssh msg@host <user>` leaves a
+// note in the recipient's BBS inbox (store-and-forward, see the Members plugin).
+var MsgNames = map[string]bool{"msg": true, "message": true}
+
+// IsMsgName reports whether the SSH username requests the messaging route.
+func IsMsgName(u string) bool { return MsgNames[strings.ToLower(u)] }
+
 // systemReserved are names that don't drive an SSH route but would still
 // collide with a per-user subdomain (<name>.<host>), the agent route, or common
 // infra hostnames — so members may not claim them as account names.
@@ -129,7 +137,7 @@ func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
 		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
-		MailNames[n] || FilesAdminNames[n] || systemReserved[n] {
+		MailNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes

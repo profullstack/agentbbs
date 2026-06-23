@@ -1,10 +1,18 @@
 name: deploy
 
 # Fully autonomous, idempotent deploy. On every push to main (or manual
-# dispatch) this SSHes to the bbs.profullstack.com droplet and re-runs the
-# idempotent provisioner (setup.sh), which pulls origin, rebuilds the Go
-# binaries, and restarts the agentbbs service that answers
-# `ssh join@bbs.profullstack.com`. Re-running is always safe.
+# dispatch) this builds the Go binaries ON THE RUNNER (which has plenty of
+# RAM), ships them to the bbs.profullstack.com droplet, and re-runs the
+# idempotent provisioner (setup.sh) with SKIP_BUILD=1 so the tiny droplet
+# never has to compile. setup.sh still pulls origin, refreshes config/assets,
+# and restarts the agentbbs service that answers `ssh join@bbs.profullstack.com`.
+# Re-running is always safe.
+#
+# Why build on the runner: the droplet is a ~458MB box also running ergo,
+# forgejo, tor, podman and the live agentbbs. The Go linker's peak memory was
+# OOM-killing the build — and with it the sshd serving the deploy session,
+# surfacing as "Connection closed by remote host" (exit 255). Compiling on the
+# 16GB runner removes that failure mode entirely.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   DEPLOY_SSH_KEY   private key whose public half is in the droplet admin
@@ -30,6 +38,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -43,7 +53,55 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Provision / redeploy (idempotent)
+      - name: Detect droplet architecture
+        id: arch
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+        run: |
+          uname_m="$(ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" 'uname -m')"
+          case "$uname_m" in
+            x86_64|amd64)  goarch=amd64 ;;
+            aarch64|arm64) goarch=arm64 ;;
+            *) echo "::error::unsupported droplet arch '$uname_m'"; exit 1 ;;
+          esac
+          echo "goarch=$goarch" >> "$GITHUB_OUTPUT"
+          echo "::notice::droplet arch $uname_m -> GOARCH=$goarch"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries (on the runner, not the droplet)
+        env:
+          GOOS: linux
+          GOARCH: ${{ steps.arch.outputs.goarch }}
+          CGO_ENABLED: '0'   # pure-Go (modernc sqlite) — static, portable binary
+        run: |
+          mkdir -p dist
+          go build -trimpath -o dist/agentbbs   ./cmd/agentbbs
+          go build -trimpath -o dist/ascii-live ./cmd/ascii-live
+          file dist/* || true
+
+      - name: Ship binaries to the droplet
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+        run: |
+          # scp can only name one remote target; copy each binary explicitly.
+          scp -i ~/.ssh/id_deploy -P "$DEPLOY_PORT" \
+              -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              dist/agentbbs "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/agentbbs-deploy-agentbbs"
+          scp -i ~/.ssh/id_deploy -P "$DEPLOY_PORT" \
+              -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              dist/ascii-live "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/agentbbs-deploy-ascii-live"
+
+      - name: Provision / redeploy (idempotent, SKIP_BUILD=1)
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
@@ -76,7 +134,11 @@ jobs:
           fi
           git -C "$SRC" fetch --depth 1 origin "$BRANCH"
           git -C "$SRC" reset --hard "origin/$BRANCH"
-          exec env BRANCH="$BRANCH" \
+          # Install the runner-built binaries, then tell setup.sh not to compile.
+          install -m 0755 /tmp/agentbbs-deploy-agentbbs   /usr/local/bin/agentbbs
+          install -m 0755 /tmp/agentbbs-deploy-ascii-live /usr/local/bin/ascii-live
+          rm -f /tmp/agentbbs-deploy-agentbbs /tmp/agentbbs-deploy-ascii-live
+          exec env BRANCH="$BRANCH" SKIP_BUILD=1 \
             COINPAY_API_KEY="${COINPAY_API_KEY:-}" \
             COINPAY_MERCHANT_ID="${COINPAY_MERCHANT_ID:-}" \
             AGENTBBS_QRYPT_ISSUER_KEY="${AGENTBBS_QRYPT_ISSUER_KEY:-}" \

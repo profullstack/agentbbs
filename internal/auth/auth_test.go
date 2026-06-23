@@ -3,7 +3,7 @@ package auth
 import "testing"
 
 func TestIsAdminName(t *testing.T) {
-	for _, name := range []string{"admin", "ADMIN", "sysop"} {
+	for _, name := range []string{"admin", "ADMIN", "sysop", "root"} {
 		if !IsAdminName(name) {
 			t.Errorf("IsAdminName(%q) = false, want true", name)
 		}

@@ -1,8 +1,9 @@
-// Package mailbox is the BBS-side mail client for Founding Lifetime members: a
-// transport-agnostic core (read, search, compose, send, flag, delete) with a
-// Bubble Tea TUI for humans and a line-oriented JSON mode for agents/bots. It
-// talks to the self-hosted Mailu stack (Dovecot IMAP + Postfix submission) at
-// mail.profullstack.com / smtp.profullstack.com.
+// Package mailbox is the BBS-side mail client for members (a free benefit of
+// membership): a transport-agnostic core (read, search, compose, send, flag,
+// delete) with a Bubble Tea TUI for humans and a line-oriented JSON mode for
+// agents/bots. Addresses are <name>@bbs.profullstack.com; it talks to the
+// self-hosted Mailu stack (Dovecot IMAP + Postfix submission) hosted on
+// mail.profullstack.com.
 //
 // The TS counterpart is @logicsrc/plugin-agentmail; the domain shapes here are
 // deliberately the same so tooling can move between them.

@@ -18,6 +18,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/plugin"
 	qi "github.com/profullstack/agentbbs/internal/qryptinvite"
 	"github.com/profullstack/agentbbs/internal/store"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 // Plugin is the hub registration. It admits members only (guests have no
@@ -99,13 +100,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	return lipgloss.NewStyle().Padding(1, 2).Render(
-		m.body + "\n\n" + dStyle.Render("press any key to return"))
+	return ui.Frame.Render(m.body + "\n\n" + ui.KeyBar("esc/q return to menu"))
 }
 
 var (
-	hStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
-	dStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	urlStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#60a5fa"))
+	hStyle   = lipgloss.NewStyle().Bold(true).Foreground(ui.Green)
+	dStyle   = ui.Dim
+	errStyle = ui.Danger
+	urlStyle = lipgloss.NewStyle().Foreground(ui.Blue)
 )

@@ -1,37 +1,67 @@
 // Package arcade is the flagship plugin (PRD §5.1): classic terminal games.
-// DOOM runs as a sandboxed external binary (doom-ascii + Freedoom); built-in
-// TUI games (snake) feed the global leaderboards.
+// DOOM and the 80s arcade classics (Space Invaders, Pac-Man, Tetris, Moon
+// Patrol) run as sandboxed external binaries on a real PTY; built-in TUI games
+// (snake, hangman) feed the global leaderboards.
 package arcade
 
 import (
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/profullstack/agentbbs/internal/auth"
 	"github.com/profullstack/agentbbs/internal/plugin"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 type Plugin struct{}
 
-func (Plugin) ID() string          { return "arcade" }
-func (Plugin) Title() string       { return "Arcade" }
-func (Plugin) Description() string { return "DOOM (ASCII), snake, leaderboards" }
-func (Plugin) RequiresAuth() bool  { return false }
+func (Plugin) ID() string    { return "arcade" }
+func (Plugin) Title() string { return "Arcade" }
+func (Plugin) Description() string {
+	return "DOOM, Space Invaders, Pac-Man, Tetris, snake, hangman & leaderboards"
+}
+func (Plugin) RequiresAuth() bool { return false }
 
 func (Plugin) New(user auth.User, ctx plugin.Context) tea.Model {
 	return newMenu(user, ctx)
 }
 
+// extGame is an 80s arcade classic launched as a sandboxed subprocess on a real
+// PTY — the doom-ascii pattern, generalized. The binary is resolved from the
+// platform assets dir first, then the host PATH and the well-known distro game
+// dirs, so either `scripts/fetch-assets.sh --arcade` (distro install) or a
+// hand-built binary dropped in assets/bin makes the game appear in the menu.
+type extGame struct {
+	id    string   // stable id; also the per-user save subdir under arcade/
+	label string   // menu label
+	desc  string   // one-line menu description
+	bins  []string // candidate binary names (first that resolves wins)
+	args  []string // launch args (most need none)
+}
+
+// extGames is the arcade catalog of external classics, in menu order.
+var extGames = []extGame{
+	{id: "invaders", label: "Space Invaders", desc: "nInvaders — shoot the descending alien fleet", bins: []string{"ninvaders", "nInvaders"}},
+	{id: "pacman", label: "Pac-Man", desc: "pacman4console — clear the maze, dodge the ghosts", bins: []string{"pacman4console"}},
+	{id: "tetris", label: "Tetris", desc: "tint — stack the falling tetrominoes", bins: []string{"tint", "vitetris", "tetris"}},
+	{id: "moonpatrol", label: "Moon Patrol", desc: "moon-buggy — jump the craters across the lunar surface", bins: []string{"moon-buggy"}},
+}
+
+// gameDirs are the well-known locations distro packages drop game binaries.
+// Debian/Ubuntu put them in /usr/games, which is usually off the daemon's PATH,
+// so we probe these explicitly in addition to exec.LookPath.
+var gameDirs = []string{"/usr/games", "/usr/local/games", "/usr/local/bin", "/usr/bin"}
+
 // entry is one row in the arcade menu.
 type entry struct {
-	label string
-	desc  string
-	run   func(m *menu) (tea.Model, tea.Cmd)
+	section string
+	label   string
+	desc    string
+	run     func(m *menu) (tea.Model, tea.Cmd)
 }
 
 type menu struct {
@@ -45,44 +75,89 @@ type menu struct {
 	child   tea.Model // snake / leaderboard take over here
 }
 
-var (
-	tStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#fbbf24"))
-	dStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24"))
-	eStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-)
+var theme = ui.New(ui.Gold)
 
 func newMenu(user auth.User, ctx plugin.Context) *menu {
 	m := &menu{user: user, ctx: ctx}
+
+	// --- DOOM (per WAD) ---
 	for _, wad := range findWADs(ctx, user) {
 		wad := wad
 		m.entries = append(m.entries, entry{
-			label: "DOOM — " + filepath.Base(wad),
-			desc:  "doom-ascii in a sandbox (24-bit color terminal recommended)",
-			run:   func(m *menu) (tea.Model, tea.Cmd) { return m, m.launchDoom(wad) },
+			section: "DOOM",
+			label:   "DOOM — " + filepath.Base(wad),
+			desc:    "doom-ascii in a sandbox (24-bit color terminal recommended)",
+			run:     func(m *menu) (tea.Model, tea.Cmd) { return m, m.launchDoom(wad) },
 		})
 	}
-	if len(m.entries) == 0 {
+	if doomBin(ctx) == "" {
 		m.entries = append(m.entries, entry{
-			label: "DOOM — not installed",
-			desc:  "run scripts/fetch-assets.sh on the host to build doom-ascii + Freedoom",
-			run:   func(m *menu) (tea.Model, tea.Cmd) { m.note = "assets missing on host"; return m, nil },
+			section: "DOOM",
+			label:   "DOOM — not installed",
+			desc:    "run scripts/fetch-assets.sh on the host to build doom-ascii + Freedoom",
+			run:     func(m *menu) (tea.Model, tea.Cmd) { m.note = "assets missing on host"; return m, nil },
 		})
 	}
+
+	// --- arcade classics (external binaries) ---
+	var arcadeFound bool
+	for _, g := range extGames {
+		g := g
+		if resolveBin(ctx, g.bins) == "" {
+			continue
+		}
+		arcadeFound = true
+		m.entries = append(m.entries, entry{
+			section: "ARCADE",
+			label:   g.label,
+			desc:    g.desc,
+			run:     func(m *menu) (tea.Model, tea.Cmd) { return m, m.launchExt(g) },
+		})
+	}
+	if !arcadeFound {
+		m.entries = append(m.entries, entry{
+			section: "ARCADE",
+			label:   "Arcade classics — not installed",
+			desc:    "run scripts/fetch-assets.sh --arcade on the host (Space Invaders, Pac-Man, Tetris, Moon Patrol)",
+			run:     func(m *menu) (tea.Model, tea.Cmd) { m.note = "arcade binaries missing on host"; return m, nil },
+		})
+	}
+
+	// --- built-in (leaderboard-backed) ---
 	m.entries = append(m.entries,
 		entry{
-			label: "Snake",
-			desc:  "built-in; high scores hit the global leaderboard",
+			section: "BUILT-IN",
+			label:   "Snake",
+			desc:    "built-in; high scores hit the global leaderboard",
 			run: func(m *menu) (tea.Model, tea.Cmd) {
 				m.child = newSnake(m.user, m.ctx, m.width, m.height)
 				return m, m.child.Init()
 			},
 		},
 		entry{
-			label: "Leaderboard",
-			desc:  "global top scores",
+			section: "BUILT-IN",
+			label:   "Hangman",
+			desc:    "built-in word game; high scores hit the global leaderboard",
 			run: func(m *menu) (tea.Model, tea.Cmd) {
-				m.child = newBoard(m.ctx)
+				m.child = newHangman(m.user, m.ctx)
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
+			label:   "Leaderboard — Snake",
+			desc:    "global top snake scores",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newBoard(m.ctx, "snake")
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
+			label:   "Leaderboard — Hangman",
+			desc:    "global top hangman scores",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newBoard(m.ctx, "hangman")
 				return m, m.child.Init()
 			},
 		},
@@ -116,24 +191,93 @@ func doomBin(ctx plugin.Context) string {
 	return ""
 }
 
+// resolveBin finds the first candidate binary that exists: bundled in the
+// platform assets dir, on PATH, or in a well-known distro game dir.
+func resolveBin(ctx plugin.Context, names []string) string {
+	for _, n := range names {
+		if p := filepath.Join(ctx.AssetsDir, "bin", n); isExec(p) {
+			return p
+		}
+		if p, err := exec.LookPath(n); err == nil {
+			return p
+		}
+		for _, d := range gameDirs {
+			if p := filepath.Join(d, n); isExec(p) {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+func isExec(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0
+}
+
+// workDir returns the writable per-game save dir: a stable path for members,
+// a throwaway temp dir for guests.
+func (m *menu) workDir(sub string) string {
+	if m.ctx.DataDir == "" {
+		d, _ := os.MkdirTemp("", "agentbbs-guest-"+strings.ReplaceAll(sub, "/", "-")+"-")
+		return d
+	}
+	d := filepath.Join(m.ctx.DataDir, "arcade", sub)
+	_ = os.MkdirAll(d, 0o755)
+	return d
+}
+
+// gameEnv is the minimal environment handed to a sandboxed game. It does NOT
+// inherit the daemon's environment (which carries operator secrets like
+// COINPAY_API_KEY) — a third-party game binary has no business seeing those.
+// TERM comes from the client PTY so ncurses games (Space Invaders, Pac-Man,
+// Tetris, Moon Patrol) can open the terminal; without it initscr() fails with
+// "Error opening terminal" and the game exits before drawing a frame.
+func (m *menu) gameEnv(work string) []string {
+	term := m.ctx.Term
+	if term == "" {
+		term = "xterm-256color" // sane default if the client didn't request a PTY type
+	}
+	return []string{
+		"TERM=" + term,
+		"PATH=/usr/games:/usr/local/games:/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + work,
+		"LANG=C.UTF-8", // unicode box-drawing for the ncurses games
+	}
+}
+
 // launchDoom suspends the TUI and bridges the session to a sandboxed
 // doom-ascii on a real PTY. Savegames land in the per-user work dir.
 func (m *menu) launchDoom(wad string) tea.Cmd {
 	bin := doomBin(m.ctx)
-	work := m.ctx.DataDir
-	if work == "" { // guests: throwaway saves
-		work, _ = os.MkdirTemp("", "agentbbs-guest-doom-")
-	} else {
-		work = filepath.Join(work, "doom", strings.TrimSuffix(filepath.Base(wad), filepath.Ext(wad)))
-		_ = os.MkdirAll(work, 0o755)
-	}
+	work := m.workDir(filepath.Join("doom", strings.TrimSuffix(filepath.Base(wad), filepath.Ext(wad))))
 	cmd := m.ctx.Sandbox.Command(work, bin, "-iwad", wad)
+	cmd.Env = m.gameEnv(work)
 	return tea.Exec(newPtyExec(cmd, m.width, m.height), func(err error) tea.Msg {
-		return doomDoneMsg{err: err}
+		return gameDoneMsg{name: "DOOM", err: err}
 	})
 }
 
-type doomDoneMsg struct{ err error }
+// launchExt suspends the TUI and bridges the session to a sandboxed arcade
+// classic on a real PTY (the generalized doom path).
+func (m *menu) launchExt(g extGame) tea.Cmd {
+	bin := resolveBin(m.ctx, g.bins)
+	if bin == "" { // raced with an uninstall; surface rather than exec ""
+		m.note = g.label + " is no longer installed on the host"
+		return nil
+	}
+	work := m.workDir(g.id)
+	cmd := m.ctx.Sandbox.Command(work, bin, g.args...)
+	cmd.Env = m.gameEnv(work)
+	return tea.Exec(newPtyExec(cmd, m.width, m.height), func(err error) tea.Msg {
+		return gameDoneMsg{name: g.label, err: err}
+	})
+}
+
+type gameDoneMsg struct {
+	name string
+	err  error
+}
 
 func (m *menu) Init() tea.Cmd { return nil }
 
@@ -151,9 +295,9 @@ func (m *menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	switch msg := msg.(type) {
-	case doomDoneMsg:
+	case gameDoneMsg:
 		if msg.err != nil {
-			m.note = "doom exited: " + msg.err.Error()
+			m.note = msg.name + " exited: " + msg.err.Error()
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -180,19 +324,23 @@ func (m *menu) View() string {
 	if m.child != nil {
 		return m.child.View()
 	}
-	s := tStyle.Render("Arcade") + "\n\n"
+	s := theme.Title("Arcade") + ui.Dim.Render("  ·  classic terminal games, sandboxed") + "\n\n"
+	prevSection := ""
 	for i, e := range m.entries {
-		cur := "  "
-		if i == m.cursor {
-			cur = cStyle.Render("> ")
+		if e.section != prevSection {
+			if prevSection != "" {
+				s += "\n"
+			}
+			s += theme.Section(e.section) + "\n"
+			prevSection = e.section
 		}
-		s += fmt.Sprintf("%s%s\n  %s\n", cur, e.label, dStyle.Render(e.desc))
+		s += theme.MenuItem(i == m.cursor, e.label, "", e.desc)
 	}
-	s += "\n" + dStyle.Render("↑/↓ move · enter play · q back to hub")
+	s += "\n" + ui.KeyBar("↑/↓ move · enter play · q back to hub")
 	if m.note != "" {
-		s += "\n" + eStyle.Render(m.note)
+		s += "\n" + ui.Danger.Render(m.note)
 	}
-	return lipgloss.NewStyle().Padding(1, 2).Render(s)
+	return ui.Frame.Render(s)
 }
 
 // backMsg returns from a child (snake/leaderboard) to the arcade menu.

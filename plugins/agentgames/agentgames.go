@@ -18,6 +18,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/store"
+	"github.com/profullstack/agentbbs/internal/ui"
 )
 
 // Plugin is the AgentGames hub entry.
@@ -52,12 +53,12 @@ const (
 )
 
 var (
-	title  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#4ade80"))
-	dim    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ade80"))
-	head   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#60a5fa"))
-	warn   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	frame  = lipgloss.NewStyle().Padding(1, 2)
+	title  = lipgloss.NewStyle().Bold(true).Foreground(ui.Green)
+	dim    = ui.Dim
+	cursor = lipgloss.NewStyle().Bold(true).Foreground(ui.Green)
+	head   = lipgloss.NewStyle().Bold(true).Foreground(ui.Blue)
+	warn   = ui.Danger
+	frame  = ui.Frame
 )
 
 var actions = []string{"Ladder", "Replays", "Play vs bot"}
@@ -302,7 +303,7 @@ func (m *model) View() string {
 	case scPlay:
 		body, help = m.viewPlay()
 	}
-	out := title.Render("AgentGames") + "\n\n" + body + "\n" + dim.Render(help)
+	out := title.Render("AgentGames") + "\n\n" + body + "\n" + ui.KeyBar(help)
 	if m.note != "" {
 		out += "\n" + m.note
 	}
@@ -393,7 +394,7 @@ func (m *model) viewPlay() (string, string) {
 
 func (m *model) row(i int) string {
 	if i == m.cursor {
-		return cursor.Render("> ")
+		return cursor.Render("❯ ")
 	}
 	return "  "
 }

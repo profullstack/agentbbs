@@ -1,0 +1,36 @@
+# docker-compose.override.yml — copy to docker-compose.override.yml (gitignored).
+# Compose loads this file automatically. It carries three fixes the trimmed base
+# compose needs; see docs/mail.md for the full rationale.
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        # Mailu trusts SUBNET (mailu.env) as its internal network for
+        # service-to-service auth/relay; the real network MUST match it.
+        - subnet: 192.168.203.0/24
+services:
+  # Mailu requires a DNSSEC-validating resolver or admin won't start.
+  resolver:
+    image: ghcr.io/mailu/unbound:2024.06
+    env_file: mailu.env
+    restart: always
+    networks:
+      default:
+        ipv4_address: 192.168.203.254
+  front:    { dns: [192.168.203.254], depends_on: [resolver] }
+  admin:    { dns: [192.168.203.254], depends_on: [resolver] }
+  imap:
+    dns: [192.168.203.254]
+    depends_on: [resolver]
+    # Publish Dovecot directly on loopback so the agentbbs gateway can use the
+    # master-user login (the front's nginx auth proxy rejects "<addr>*master").
+    # Plaintext is fine: the connection never leaves the host.
+    ports: ["127.0.0.1:14143:143"]
+  smtp:     { dns: [192.168.203.254], depends_on: [resolver] }
+  antispam: { dns: [192.168.203.254], depends_on: [resolver] }
+  # In Mailu 2024.06 the webmail image is "webmail" (not "roundcube:2024.06").
+  webmail:
+    image: ghcr.io/mailu/webmail:2024.06
+    dns: [192.168.203.254]
+    depends_on: [resolver]
