@@ -707,7 +707,7 @@ func (a *app) handleJoin(s ssh.Session) {
 	wish.Println(s, "\n"+strings.Join(includes, "\n"))
 
 	// 2) Founding Lifetime ($99 one-time): custom domains + Tor shell.
-	a.offerPremium(s, &u)
+	a.offerPremium(s, in, &u)
 	_ = s.Exit(0)
 }
 
@@ -921,20 +921,20 @@ func (a *app) showPremiumWelcome(s ssh.Session, u store.User) {
 }
 
 // offerPremium pitches the $99 Founding Lifetime membership — custom domains and
-// the Tor shell. When CoinPay can mint a charge in-session it shows the exact
-// amount and deposit address; otherwise it falls back to a pay command.
-// Non-blocking: the member pays out of band and perks unlock on their next
-// connect (or re-running join@).
-func (a *app) offerPremium(s ssh.Session, u *store.User) {
+// the Tor shell — and only mints a CoinPay charge if the member explicitly opts
+// in at the prompt. Showing the pitch must NOT create a payment: minting on
+// every join@ produced a $99 invoice for everyone who connected. Non-blocking:
+// the member pays out of band and perks unlock on their next connect (or
+// re-running join@).
+func (a *app) offerPremium(s ssh.Session, in *bufio.Reader, u *store.User) {
 	// Maybe they already paid (e.g. re-ran join@ after paying).
 	if a.ensurePremium(u) {
 		a.showPremiumWelcome(s, *u)
 		return
 	}
-	ref := payments.PremiumReference(u.PubKeyFP)
 
-	lines := []string{
-		"",
+	// Pitch only — no charge is created here.
+	wish.Println(s, "\n"+strings.Join([]string{
 		"  ★ Founding Lifetime Member — $" + payments.PremiumAmount() + ", one-time",
 		"    Only the first " + payments.FoundingCap + " accounts. Pay once, keep it for life.",
 		"",
@@ -944,33 +944,44 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		"    • custom domains    point yourdomain.com at your homepage",
 		"    • Tor               a “Tor shell” in your pod — everything over Tor",
 		"    • locked-in price   founding rate is yours for life — never renew, never pay again",
-		"",
+	}, "\n"))
+
+	// Explicit opt-in. Anything but yes leaves with no payment created.
+	wish.Print(s, "\n  Become a Founding member now? Type \"yes\" for a payment address [no]: ")
+	line, err := readLine(s, in)
+	if err != nil || !isYes(line) {
+		wish.Println(s, "\n  No problem — you're a free member. Want it later? Re-run: ssh join@"+a.host+"\n")
+		return
 	}
-	if c, ok, err := payments.CreatePremiumCharge(ref); ok && err == nil {
-		// Remember the payment id so a later connect can confirm settlement.
-		if err := a.st.SetPremiumPayment(u.ID, c.ID); err != nil {
-			log.Error("store premium payment id", "err", err)
-		}
-		amount := "$" + payments.PremiumAmount() + " " + payments.PremiumCurrency()
-		if c.CryptoAmount != "" {
-			cur := c.Currency
-			if cur == "" {
-				cur = strings.ToUpper(payments.PremiumBlockchain())
-			}
-			amount += "  (≈ " + c.CryptoAmount + " " + cur + ")"
-		}
-		lines = append(lines,
-			"  amount    "+amount,
-			"  send to   "+c.Address,
-		)
-		if c.QR != "" {
-			lines = append(lines, "  qr        "+c.QR)
-		}
-	} else {
+
+	ref := payments.PremiumReference(u.PubKeyFP)
+	c, ok, err := payments.CreatePremiumCharge(ref)
+	if !ok || err != nil {
 		if err != nil {
 			log.Error("create premium charge", "err", err)
 		}
-		lines = append(lines, "  Payment is temporarily unavailable — please try again shortly.")
+		wish.Println(s, "\n  Payment is temporarily unavailable — please try again shortly.\n")
+		return
+	}
+	// Remember the payment id so a later connect can confirm settlement.
+	if err := a.st.SetPremiumPayment(u.ID, c.ID); err != nil {
+		log.Error("store premium payment id", "err", err)
+	}
+	amount := "$" + payments.PremiumAmount() + " " + payments.PremiumCurrency()
+	if c.CryptoAmount != "" {
+		cur := c.Currency
+		if cur == "" {
+			cur = strings.ToUpper(payments.PremiumBlockchain())
+		}
+		amount += "  (≈ " + c.CryptoAmount + " " + cur + ")"
+	}
+	lines := []string{
+		"",
+		"  amount    " + amount,
+		"  send to   " + c.Address,
+	}
+	if c.QR != "" {
+		lines = append(lines, "  qr        "+c.QR)
 	}
 	lines = append(lines,
 		"",
@@ -978,6 +989,16 @@ func (a *app) offerPremium(s ssh.Session, u *store.User) {
 		"",
 	)
 	wish.Println(s, strings.Join(lines, "\n"))
+}
+
+// isYes reports whether a prompt line is an affirmative opt-in.
+func isYes(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "yes", "y":
+		return true
+	default:
+		return false
+	}
 }
 
 // notifySignup emails the operator the details of a newly verified signup.
