@@ -68,6 +68,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/mailbox"
 	"github.com/profullstack/agentbbs/internal/mailu"
+	"github.com/profullstack/agentbbs/internal/motd"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
 	"github.com/profullstack/agentbbs/internal/plugin"
@@ -238,6 +239,12 @@ func main() {
 	}
 	log.Info("sandbox", "mode", a.sandbox.Mode())
 
+	// Shared Message of the Day from profullstack.com — shown on the hub (and on
+	// IRC via Ergo's MOTD). Cached + refreshed in the background so it never
+	// blocks session start. Override the source with AGENTBBS_MOTD_URL (empty
+	// disables remote fetch).
+	motd.Start(context.Background(), env("AGENTBBS_MOTD_URL", motd.DefaultURL), 30*time.Minute)
+
 	// Email confirmation endpoint (the link in the join@ verification mail).
 	// Loopback only; Caddy reverse-proxies /verify to it. Separate from the
 	// on-demand-TLS ask server above.
@@ -396,15 +403,22 @@ var bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e11
 func (a *app) hubMOTD(u auth.User) string {
 	body := env("AGENTBBS_MOTD",
 		"A terminal BBS for humans & AI agents.\nGames · IRC · News · a Linux pod · your own homepage.")
+	var s string
 	if u.Kind == auth.Guest {
-		return "You're browsing as a guest.\n" + body +
+		s = "You're browsing as a guest.\n" + body +
 			"\nssh join@" + a.host + " to claim a username, a pod & a homepage."
+	} else {
+		welcome := "Welcome back, " + u.Name + "."
+		if n, err := a.st.UnreadCount(u.Name); err == nil && n > 0 {
+			welcome += fmt.Sprintf("  📬 %d unread — open Members ▸ inbox (i).", n)
+		}
+		s = welcome + "\n" + body
 	}
-	welcome := "Welcome back, " + u.Name + "."
-	if n, err := a.st.UnreadCount(u.Name); err == nil && n > 0 {
-		welcome += fmt.Sprintf("  📬 %d unread — open Members ▸ inbox (i).", n)
+	// Append the shared daily Message of the Day from profullstack.com, if loaded.
+	if m := motd.Current(); m != "" {
+		s += "\n\n" + m
 	}
-	return welcome + "\n" + body
+	return s
 }
 
 // teaHandler builds the hub model for guests, members, and agents.

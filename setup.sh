@@ -859,6 +859,12 @@ if [ "$IRC" = "1" ]; then
            -keyout "$ERGO_DATA/tls/privkey.pem" -out "$ERGO_DATA/tls/fullchain.pem" \
            -subj "/CN=${IRC_DOMAIN}" 2>/dev/null
   fi
+  # MOTD: pull the shared Message of the Day from profullstack.com into Ergo's
+  # MOTD file (shown on IRC connect / via /MOTD). The ergo-motd.timer keeps it
+  # fresh; Ergo reads it on start, so write it before the service comes up.
+  install -m 0755 "${SRC_DIR}/deploy/ergo/refresh-motd.sh" /usr/local/bin/ergo-refresh-motd
+  ERGO_CONF_DIR=/etc/ergo /usr/local/bin/ergo-refresh-motd || true
+
   chown -R ergo:ergo "$ERGO_DATA" /etc/ergo
 
   # Initialize the datastore once.
@@ -914,16 +920,40 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+  # Hourly MOTD refresh from profullstack.com/motd (shared across all properties).
+  cat > /etc/systemd/system/ergo-motd.service <<UNIT
+[Unit]
+Description=Refresh Ergo MOTD from profullstack.com for ${IRC_DOMAIN}
+
+[Service]
+Type=oneshot
+Environment=ERGO_CONF_DIR=/etc/ergo
+ExecStart=/usr/local/bin/ergo-refresh-motd
+UNIT
+  cat > /etc/systemd/system/ergo-motd.timer <<UNIT
+[Unit]
+Description=Periodic Ergo MOTD refresh from profullstack.com
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
   systemctl daemon-reload
   systemctl enable ergo >/dev/null 2>&1 || true
   systemctl restart ergo
   systemctl enable --now ergo-certs.timer >/dev/null 2>&1 || true
+  systemctl enable --now ergo-motd.timer >/dev/null 2>&1 || true
   ufw allow 6697/tcp >/dev/null
   sleep 1
   systemctl is-active --quiet ergo \
     || warn "ergo failed to start — check: journalctl -u ergo -n50"
 else
-  systemctl disable --now ergo ergo-certs.timer >/dev/null 2>&1 || true
+  systemctl disable --now ergo ergo-certs.timer ergo-motd.timer >/dev/null 2>&1 || true
 fi
 
 # ---- 9c. News (Usenet/NNTP) server (co-located news.${DOMAIN}) --------------
