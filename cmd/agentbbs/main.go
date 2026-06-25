@@ -162,6 +162,10 @@ func main() {
 		notifyCreds(st, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "provision-user" {
+		provisionUser(st, os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
 		qryptIssuerKeygen()
 		return

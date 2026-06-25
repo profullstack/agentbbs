@@ -699,6 +699,20 @@ fi
 FILES_SITE="
 ${FILES_DOMAIN} {
 	encode zstd gzip
+
+	# Public file area — unauthenticated, read-only HTTP for the shared /public
+	# directory, so download links (e.g. extension .crx/.zip) work for everyone.
+	# Maps 1:1 to the SFTP path: a member who runs
+	#   scp dist.crx files@${FILES_DOMAIN}:/public/extensions/acme/
+	# gets the URL https://${FILES_DOMAIN}/public/extensions/acme/dist.crx .
+	# Everything else falls through to the auth'd web file manager below.
+	handle_path /public/* {
+		root * ${DATA_DIR}/files/public
+		header Cache-Control \"public, max-age=300\"
+		file_server
+	}
+
+	# Member web file manager (webmail-password login; /me + /public browsing).
 	reverse_proxy http://${FILES_WEB_ADDR}
 }
 "
