@@ -204,3 +204,16 @@ func Fingerprint(key ssh.PublicKey) string {
 	}
 	return gossh.FingerprintSHA256(key)
 }
+
+// FingerprintAuthorizedKey parses an OpenSSH authorized_keys line (e.g.
+// "ssh-ed25519 AAAA… comment") and returns its SHA256 fingerprint — the same
+// value Fingerprint produces for a live session key. Used to provision a member
+// from a public key supplied out of band (e.g. the extension store). Any
+// trailing options/comment are ignored.
+func FingerprintAuthorizedKey(authorizedKey string) (string, error) {
+	key, _, _, _, err := gossh.ParseAuthorizedKey([]byte(strings.TrimSpace(authorizedKey)))
+	if err != nil {
+		return "", err
+	}
+	return gossh.FingerprintSHA256(key), nil
+}

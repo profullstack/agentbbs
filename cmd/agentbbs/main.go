@@ -162,6 +162,10 @@ func main() {
 		notifyCreds(st, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "provision-user" {
+		provisionUser(st, os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "qrypt-issuer-keygen" {
 		qryptIssuerKeygen()
 		return
@@ -964,7 +968,7 @@ func (a *app) offerPremium(s ssh.Session, in *bufio.Reader, u *store.User) {
 	wish.Print(s, "\n  Become a Founding member now? Type \"yes\" for a payment address [no]: ")
 	line, err := readLine(s, in)
 	if err != nil || !isYes(line) {
-		wish.Println(s, "\n  No problem — you're a free member. Want it later? Re-run: ssh join@"+a.host+"\n")
+		wish.Print(s, "\n  No problem — you're a free member. Want it later? Re-run: ssh join@"+a.host+"\n\n")
 		return
 	}
 
@@ -974,7 +978,7 @@ func (a *app) offerPremium(s ssh.Session, in *bufio.Reader, u *store.User) {
 		if err != nil {
 			log.Error("create premium charge", "err", err)
 		}
-		wish.Println(s, "\n  Payment is temporarily unavailable — please try again shortly.\n")
+		wish.Print(s, "\n  Payment is temporarily unavailable — please try again shortly.\n\n")
 		return
 	}
 	// Remember the payment id so a later connect can confirm settlement.
