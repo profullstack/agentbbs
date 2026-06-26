@@ -103,28 +103,21 @@ func TestSymlinkEscapeBlocked(t *testing.T) {
 	}
 }
 
-func TestPublicWriteACL(t *testing.T) {
-	svc, st, u := newTestService(t)
+func TestOwnPublicWritable(t *testing.T) {
+	svc, _, u := newTestService(t)
 
-	// Default: members may write to the public area.
+	// A member's /public is their own area (served at ~name/public) — they can
+	// always write to it, and it resolves under <root>/public/<name>.
 	sess, _ := svc.newSession(u)
-	r := sftp.NewRequest("Mkdir", "/public/uploads")
-	if err := sess.Filecmd(r); err != nil {
-		t.Fatalf("public mkdir should succeed by default: %v", err)
+	if err := sess.Filecmd(sftp.NewRequest("Mkdir", "/public/uploads")); err != nil {
+		t.Fatalf("own /public mkdir should succeed: %v", err)
 	}
-
-	// Turn public write off → writes denied, reads still fine.
-	if err := svc.SetPublicWrite(false); err != nil {
-		t.Fatal(err)
+	res, err := sess.resolve("/public/uploads")
+	if err != nil || !res.writable {
+		t.Fatalf("own /public should resolve writable: %+v err=%v", res, err)
 	}
-	_ = st
-	sess2, _ := svc.newSession(u)
-	if err := sess2.Filecmd(sftp.NewRequest("Mkdir", "/public/more")); err != sftp.ErrSSHFxPermissionDenied {
-		t.Errorf("public write should be denied when off, got %v", err)
-	}
-	res, err := sess2.resolve("/public/uploads")
-	if err != nil || res.writable {
-		t.Errorf("public should resolve read-only when write is off: %+v err=%v", res, err)
+	if want := svc.userPub(u.Name); !within(want, res.real) && res.real != want {
+		t.Errorf("/public resolved to %q, want under %q", res.real, want)
 	}
 }
 
@@ -169,21 +162,27 @@ func TestUsage(t *testing.T) {
 	}
 }
 
-func TestUsageCountsPublicHome(t *testing.T) {
+func TestUsageCountsOwnedAreas(t *testing.T) {
 	svc, _, u := newTestService(t)
-	if err := svc.ensurePublicHome(u.Name); err != nil {
+	if err := svc.ensureWorkspace(u.Name); err != nil {
 		t.Fatal(err)
 	}
-	// A member's ~/public folder lives inside their private /me home, so both the
-	// top-level private file and the public file count toward the quota gauge;
-	// the shared /public area does not.
+	if err := svc.ensureUserPub(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	// Both of the member's owned areas — private /me and their public /public
+	// (<root>/public/<name>) — count toward the quota gauge. Another member's
+	// public area does not.
 	if err := os.WriteFile(filepath.Join(svc.privRoot(u.Name), "a.txt"), []byte(strings.Repeat("x", 512)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svc.publicHome(u.Name), "b.txt"), []byte(strings.Repeat("y", 256)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.userPub(u.Name), "b.txt"), []byte(strings.Repeat("y", 256)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svc.pubRoot(), "shared.txt"), []byte(strings.Repeat("z", 9999)), 0o644); err != nil {
+	if err := os.MkdirAll(svc.userPub("someoneelse"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.userPub("someoneelse"), "x.txt"), []byte(strings.Repeat("z", 9999)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	usage, err := svc.Usage(u)
@@ -191,7 +190,7 @@ func TestUsageCountsPublicHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	if usage.Bytes != 768 {
-		t.Errorf("usage = %d, want 768 (512 /me + 256 /me/public, shared /public excluded)", usage.Bytes)
+		t.Errorf("usage = %d, want 768 (512 /me + 256 /public, other members excluded)", usage.Bytes)
 	}
 }
 

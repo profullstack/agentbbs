@@ -704,17 +704,14 @@ ${FILES_DOMAIN} {
 	# at https://${DOMAIN}/~<name>). The agentbbs file-manager on loopback serves:
 	#   /                  directory of all members (links to each one's BBS site
 	#                      and their public files here) — no auth
-	#   /~<name>/public[/] a member's public files folder — anon read-only browse
-	#   /public[/...]      the shared public area — anon read-only browse + files
-	#   (signed in)        the member's private /me (whose public/ subdir is the
-	#                      ~name/public surface) and the shared /public
-	# Clean URLs map 1:1 to the SFTP paths, so share links just work:
-	#   scp dist.crx files@${FILES_DOMAIN}:/public/extensions/acme/
-	#     -> https://${FILES_DOMAIN}/public/extensions/acme/dist.crx
-	#   scp index.html files@${FILES_DOMAIN}:/me/public/
+	#   /~<name>/public[/] a member's own public files — anon read-only browse
+	#   (signed in)        the member's two areas: private /me and public /public
+	# A member has two SEPARATE areas: /me (private) and /public (their own public
+	# files, served at ~<name>/public). Clean URLs map 1:1 to the SFTP paths:
+	#   scp index.html files@${FILES_DOMAIN}:/public/
 	#     -> https://${FILES_DOMAIN}/~<name>/public/index.html
-	# The anon surface only ever exposes ~name/public, never the rest of a
-	# member's private /me (see internal/files web tests); it is read-only.
+	# The anon surface only ever exposes ~name/public, never a member's private
+	# /me (see internal/files web tests); it is read-only.
 	reverse_proxy http://${FILES_WEB_ADDR}
 }
 "

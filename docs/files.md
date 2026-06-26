@@ -38,15 +38,14 @@ When you connect you see a virtual root with two directories:
 | Path | What it is | Access |
 |---|---|---|
 | `/me` | Your **private** per-user workspace | read/write, quota-limited |
-| `/public` | The single **shared public file area** (old-school BBS file area) | world-read; members-only write by default |
+| `/public` | Your **own public files** area, published at `~<name>/public` | read/write (yours); world-read anonymously |
 
-Your `/me` home has one special subfolder: **`/me/public`**. Anything you put
-there is published on the web at **`~<name>/public`** (the unix `~/public`
-convention) — that, and only that, is the per-member public surface. The rest of
-`/me` stays private; there is **no** path from one member's `/me` to another's.
-Both areas are confined: a path that tries to escape its root (`../`, an absolute
+These are two **separate** areas — `/public` is a sibling of `/me`, **not** a
+folder inside it. `/me` stays fully private; anything you put in `/public` is
+published on the web at **`~<name>/public`**. Both count toward your quota. Both
+areas are confined: a path that tries to escape its root (`../`, an absolute
 path, or a planted symlink) is rejected, and the unauthenticated web surface
-(below) only ever exposes `~name/public`, never the rest of a member's `/me`.
+(below) only ever exposes `~name/public`, never your private `/me`.
 
 > files.\<host\> is a **file server, not a website host**. Member homepages
 > ("sites") live on the BBS at `https://<host>/~<name>`; the file host's `~user`
@@ -54,11 +53,10 @@ path, or a planted symlink) is rejected, and the unauthenticated web surface
 
 ## Quotas
 
-Each private workspace has a byte quota (default **1 GiB**, set by
-`AGENTBBS_FILES_QUOTA_MB`). The gauge measures all of `/me` — including your
-`/me/public` folder — and writes that would exceed it fail. Operators can set a
-per-user override in the management TUI. The shared `/public` area is
-operator-managed and **not** metered per user.
+Each member has a byte quota (default **1 GiB**, set by
+`AGENTBBS_FILES_QUOTA_MB`). The gauge sums both of your areas — private `/me`
+**and** your public `/public` — and writes that would exceed it fail. Operators
+can set a per-user override in the management TUI.
 
 ## In-BBS browser
 
@@ -94,7 +92,7 @@ content-blind.
 |---|---|---|
 | `AGENTBBS_FILES` | `1` | enable the SFTP subsystem + Files plugin (`0` disables) |
 | `AGENTBBS_FILES_QUOTA_MB` | `1024` | default per-user workspace quota (MB) |
-| `AGENTBBS_DATA` | `./data` | storage lives under `<data>/files/{users,public}` (a member's public files are `users/<name>/public`) |
+| `AGENTBBS_DATA` | `./data` | storage lives under `<data>/files/{users,public}` — private `/me` is `users/<name>`, public `/public` is `public/<name>` |
 
 ## Provisioning members from a public key (for external services)
 
@@ -129,18 +127,14 @@ has no route into anyone's `/me`.
 | URL | Serves | Auth |
 |---|---|---|
 | `/` | A **directory of all members** — each linked to their BBS **site** and their **public files** | none |
-| `/~<name>/public[/path]` | That member's public files (`/me/public`) — browse + download | none |
+| `/~<name>/public[/path]` | That member's own public files (`/public`) — browse + download | none |
 | `/~<name>` | Redirects to `/~<name>/public/` | none |
-| `/public[/path]` | The shared public area — browse + download | none |
-| `/?path=…`, `/upload`, … | The authenticated manager: your `/me` + the shared `/public` | webmail login |
+| `/?path=…`, `/upload`, … | The authenticated manager: your `/me` and your `/public` | webmail login |
 
 Clean URLs map **1:1 to the SFTP paths**, so share links just work:
 
 ```
-scp dist.crx files@files.profullstack.com:/public/extensions/acme/
-        ->  https://files.profullstack.com/public/extensions/acme/dist.crx
-
-scp index.html files@files.profullstack.com:/me/public/
+scp index.html files@files.profullstack.com:/public/
         ->  https://files.profullstack.com/~chovy/public/index.html
 ```
 

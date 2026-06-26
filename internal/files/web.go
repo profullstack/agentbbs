@@ -69,8 +69,6 @@ func (s *Service) WebHandler(cfg WebConfig) http.Handler {
 	mux.HandleFunc("/upload", h.handleUpload)
 	mux.HandleFunc("/mkdir", h.handleMkdir)
 	mux.HandleFunc("/delete", h.handleDelete)
-	mux.HandleFunc("/public", h.handleAnon)  // shared public area (anon read-only)
-	mux.HandleFunc("/public/", h.handleAnon) // shared public area (anon read-only)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	return mux
 }
@@ -357,11 +355,11 @@ func (h *webSrv) renderIndex(w http.ResponseWriter, errMsg string) {
 	_ = indexTmpl.Execute(w, data)
 }
 
-// handleAnon serves the unauthenticated, read-only public surface: the shared
-// /public area and each member's public files at /~<name>/public. Directories
-// render a browse listing; files stream with a content type and a short cache.
-// It is confined to the area root by the same safeJoin guard as SFTP — only a
-// member's ~/public subfolder is exposed, never the rest of their private /me.
+// handleAnon serves the unauthenticated, read-only public surface: each member's
+// own public files at /~<name>/public. Directories render a browse listing;
+// files stream with a content type and a short cache. It is confined to the area
+// root by the same safeJoin guard as SFTP — only a member's /public area is
+// exposed, never their private /me.
 func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -370,9 +368,6 @@ func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	upath := path.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
 	var name, rel, prefix, heading string
 	switch {
-	case upath == "/public" || strings.HasPrefix(upath, "/public/"):
-		// The shared/global public area.
-		name, rel, prefix, heading = "", strings.TrimPrefix(upath, "/public"), "/public", "/public"
 	case strings.HasPrefix(upath, "/~"):
 		// A member's own public files: /~<name>/public[/...]. The bare ~name (or
 		// anything not under /public) is not a file surface — only ~name/public is
@@ -588,7 +583,7 @@ var listTmpl = template.Must(template.New("list").Parse(`<!doctype html><html><h
 </tr>{{end}}
 {{if not .Entries}}<tr><td colspan=4 class=muted>(empty)</td></tr>{{end}}
 </table>
-<p class=muted style="margin-top:20px">Files in <code>/me/public</code> are public at <a href="/~{{.User}}/public/">~{{.User}}/public</a>. Reachable over SFTP with your SSH key: <code>sftp files@{{.Title}}</code>.</p>
+<p class=muted style="margin-top:20px">Your <code>/public</code> area is public at <a href="/~{{.User}}/public/">~{{.User}}/public</a>; <code>/me</code> stays private. Reachable over SFTP with your SSH key: <code>sftp files@{{.Title}}</code>.</p>
 </div></body></html>`))
 
 type indexPeer struct {
@@ -623,7 +618,7 @@ type anonData struct {
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>{{.Title}}</title><style>` + baseCSS + `</style></head>
 <body><div class=wrap>
-<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/public/">shared /public</a> · <a href="/login">Sign in</a></div></div>
+<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/login">Sign in</a></div></div>
 {{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
 <p class=muted>Member directory. Each member has a <b>site</b> (their homepage on the BBS) and a <b>public files</b> folder here. <a href="/login">Sign in</a> to manage your own files.</p>
 <table><tr><th>Member</th><th>Site</th><th>Public files</th><th class=right>Size</th></tr>
@@ -633,7 +628,7 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html><html>
 <td class=right>{{.UsedH}}</td></tr>{{end}}
 {{if not .Peers}}<tr><td colspan=4 class=muted>No members yet.</td></tr>{{end}}
 </table>
-<p class=muted style="margin-top:20px">Publish over SFTP: <code>scp file files@{{.Title}}:/me/public/</code> → appears at <code>~yourname/public</code>.</p>
+<p class=muted style="margin-top:20px">Publish over SFTP: <code>scp file files@{{.Title}}:/public/</code> → appears at <code>~yourname/public</code>. (<code>/me</code> stays private.)</p>
 </div></body></html>`))
 
 var anonTmpl = template.Must(template.New("anon").Parse(`<!doctype html><html><head><meta charset=utf-8>

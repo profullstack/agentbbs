@@ -93,14 +93,16 @@ func (s *Service) privRoot(user string) string {
 	return filepath.Join(s.cfg.Root, "users", user)
 }
 
-// pubRoot is the absolute shared public-area directory.
+// pubRoot is the parent of the per-user public areas (<root>/public). Each
+// member's own public files live in a subdirectory keyed by handle; this parent
+// is what the operator moderation pane lists.
 func (s *Service) pubRoot() string { return filepath.Join(s.cfg.Root, "public") }
 
-// publicHome is the member's own public file folder: the public/ subdirectory of
-// their private home. It is exposed anonymously on the web at ~<name>/public
-// (the unix ~/public convention) and metered as part of /me.
-func (s *Service) publicHome(user string) string {
-	return filepath.Join(s.privRoot(user), "public")
+// userPub is a member's own public file area: <root>/public/<name>. It is a
+// top-level area in its own right (sibling to the private /me, NOT nested under
+// it) and is served anonymously on the web at ~<name>/public.
+func (s *Service) userPub(user string) string {
+	return filepath.Join(s.pubRoot(), user)
 }
 
 // ensureWorkspace creates a member's private workspace if absent.
@@ -108,14 +110,24 @@ func (s *Service) ensureWorkspace(user string) error {
 	return os.MkdirAll(s.privRoot(user), 0o700)
 }
 
-// ensurePublicHome creates a member's ~/public folder if absent (and the home
-// above it). The home stays private (0o700); the public/ subdir is the only
-// part the web host exposes anonymously, and the Go server reads it directly.
-func (s *Service) ensurePublicHome(user string) error {
-	if err := s.ensureWorkspace(user); err != nil {
-		return err
+// ensureUserPub creates a member's public area if absent. It is world-readable
+// (0o755) because the web host serves it anonymously at ~<name>/public.
+func (s *Service) ensureUserPub(user string) error {
+	return os.MkdirAll(s.userPub(user), 0o755)
+}
+
+// ownedUsage sums a member's two owned areas — their private /me and their
+// public /public — for the quota gauge.
+func (s *Service) ownedUsage(user string) (int64, error) {
+	priv, err := dirSize(s.privRoot(user))
+	if err != nil {
+		return 0, err
 	}
-	return os.MkdirAll(s.publicHome(user), 0o755)
+	pub, err := dirSize(s.userPub(user))
+	if err != nil {
+		return 0, err
+	}
+	return priv + pub, nil
 }
 
 // quotaFor returns the effective quota (bytes) for a user: their per-user
@@ -195,7 +207,7 @@ func (s *Service) Members() ([]Member, error) {
 		if u.Banned {
 			continue
 		}
-		n, _ := dirSize(s.publicHome(u.Name))
+		n, _ := dirSize(s.userPub(u.Name))
 		out = append(out, Member{Name: u.Name, PublicBytes: n})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -203,13 +215,13 @@ func (s *Service) Members() ([]Member, error) {
 }
 
 // AnonRoot resolves the on-disk root for an anonymous, read-only browse target:
-// the shared public area (name == "") or a member's public files folder, i.e.
-// ~/public (name = the ~handle). ok is false when the named member does not
-// exist or is banned. The returned root is a confinement boundary — callers must
-// safeJoin onto it, and it never exposes the rest of the member's private home.
+// a member's own public area /public (name = the ~handle), served at
+// ~<name>/public. ok is false when the named member does not exist or is banned.
+// The returned root is a confinement boundary — callers must safeJoin onto it,
+// and it never exposes the member's private /me.
 func (s *Service) AnonRoot(name string) (root string, ok bool, err error) {
 	if name == "" {
-		return s.pubRoot(), true, nil
+		return "", false, nil
 	}
 	u, found, err := s.st.UserByName(name)
 	if err != nil {
@@ -218,13 +230,13 @@ func (s *Service) AnonRoot(name string) (root string, ok bool, err error) {
 	if !found || u.Banned {
 		return "", false, nil
 	}
-	// Materialize the (idempotent) ~/public folder so ~name/public is browsable
-	// the moment the account exists. Without this, joining onto a missing root
-	// trips the escape guard.
-	if err := s.ensurePublicHome(u.Name); err != nil {
+	// Materialize the (idempotent) public area so ~name/public is browsable the
+	// moment the account exists. Without this, joining onto a missing root trips
+	// the escape guard.
+	if err := s.ensureUserPub(u.Name); err != nil {
 		return "", false, err
 	}
-	return s.publicHome(u.Name), true, nil
+	return s.userPub(u.Name), true, nil
 }
 
 // SafeJoin exposes the area-confinement join (lexical + symlink-escape guard)
@@ -245,10 +257,10 @@ func (u Usage) Free() int64 {
 	return u.Quota - u.Bytes
 }
 
-// Usage computes a member's private-workspace usage (all of /me, which includes
-// their ~/public folder) against their quota.
+// Usage computes a member's owned-storage usage (private /me + public /public)
+// against their quota.
 func (s *Service) Usage(u store.User) (Usage, error) {
-	used, err := dirSize(s.privRoot(u.Name))
+	used, err := s.ownedUsage(u.Name)
 	if err != nil {
 		return Usage{}, err
 	}

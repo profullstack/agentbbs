@@ -162,9 +162,8 @@ func TestWebAnonPublicSite(t *testing.T) {
 	h, _ := webTestHandler(t)
 	cookie := loginCookie(t, h)
 
-	// alice publishes to her own public folder (/me/public) and to /public.
-	uploadTo(t, h, cookie, "/me/public", "hello.txt", "from alice")
-	uploadTo(t, h, cookie, "/public", "shared.txt", "shared file")
+	// alice publishes to her own public area (/public, a sibling of private /me).
+	uploadTo(t, h, cookie, "/public", "hello.txt", "from alice")
 
 	// The unauthenticated root lists every member with a link to ~alice/public.
 	rr := httptest.NewRecorder()
@@ -187,18 +186,18 @@ func TestWebAnonPublicSite(t *testing.T) {
 		t.Fatalf("~alice: want redirect to /~alice/public/, got %d %q", rr.Code, rr.Header().Get("Location"))
 	}
 
-	// Anonymous can download from the shared public area via a clean URL.
-	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/public/shared.txt", nil))
-	if got, _ := io.ReadAll(rr.Body); string(got) != "shared file" {
-		t.Fatalf("/public file: got %q", got)
-	}
-
 	// Anonymous directory browse renders a listing.
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/public/", nil))
 	if body := rr.Body.String(); !strings.Contains(body, "hello.txt") {
 		t.Fatalf("~alice/public browse missing file: %.300s", body)
+	}
+
+	// /me stays private: there is no anonymous route into it.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/me/", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("~alice/me: want 404 (private), got %d", rr.Code)
 	}
 }
 
@@ -247,14 +246,13 @@ func TestWebAnonCannotEscape(t *testing.T) {
 	uploadTo(t, h, cookie, "/me", "secret.txt", "private")
 
 	// Only ~name/public is exposed; traversal out of a public area must not reach
-	// the private home or anything above it.
+	// the private /me or anything above it.
 	for _, p := range []string{
-		"/~alice/public/../../secret.txt",
+		"/~alice/public/../../users/alice/secret.txt",
 		"/~alice/public/../../../users/alice/secret.txt",
-		"/public/../users/alice/secret.txt",
-		"/~alice/public/..%2f..%2fsecret.txt",
-		"/~alice/secret.txt", // not under /public
-		"/~ghost/public/x",   // unknown member
+		"/~alice/public/..%2f..%2fusers%2falice%2fsecret.txt",
+		"/~alice/me/secret.txt", // /me is private — not an anon surface
+		"/~ghost/public/x",      // unknown member
 	} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, p, nil))

@@ -15,16 +15,18 @@ import (
 	"github.com/profullstack/agentbbs/internal/store"
 )
 
-// area names exposed at the virtual root.
-//
-// A member's home is /me (private). Its public/ subdirectory is exposed
-// anonymously on the web at ~<name>/public — the unix ~/public convention — so
-// "publish a file" just means dropping it in /me/public. The single shared
-// /public area is the old-school BBS file area.
+// area names exposed at the virtual root. A member has two separate top-level
+// areas: /me (private) and /public (their own public files, served anonymously
+// on the web at ~<name>/public). /public is a sibling of /me, never nested
+// inside it — /me stays fully private.
 const (
 	areaMe     = "me"
 	areaPublic = "public"
 )
+
+// metered reports whether writes to an area count against the member's quota.
+// Both of a member's owned areas (/me and their /public) are metered.
+func metered(area string) bool { return area == areaMe || area == areaPublic }
 
 // errEscape is returned when a resolved path would leave its area root. It maps
 // to an SFTP permission-denied; it must never reach the client as a real path.
@@ -34,24 +36,26 @@ var errEscape = errors.New("files: path escapes its area")
 // connection. It implements the pkg/sftp request handlers and enforces area
 // confinement, the public-area ACL, and the per-user quota.
 type session struct {
-	svc      *Service
-	user     store.User
-	pubWrite bool
-	quota    int64
-	used     atomic.Int64 // live private-workspace usage, for quota checks
+	svc   *Service
+	user  store.User
+	quota int64
+	used  atomic.Int64 // live owned-storage usage (/me + /public), for quota checks
 }
 
 func (s *Service) newSession(u store.User) (*session, error) {
-	// Ensure both the private home and its public/ subfolder exist, so writing to
-	// /me/public (which surfaces at ~name/public) just works.
-	if err := s.ensurePublicHome(u.Name); err != nil {
+	// Ensure both of the member's areas exist: their private /me and their own
+	// public /public (a sibling, not a subfolder of /me).
+	if err := s.ensureWorkspace(u.Name); err != nil {
 		return nil, err
 	}
-	used, err := dirSize(s.privRoot(u.Name))
+	if err := s.ensureUserPub(u.Name); err != nil {
+		return nil, err
+	}
+	used, err := s.ownedUsage(u.Name)
 	if err != nil {
 		return nil, err
 	}
-	sess := &session{svc: s, user: u, pubWrite: s.publicWritable(), quota: s.quotaFor(u.ID)}
+	sess := &session{svc: s, user: u, quota: s.quotaFor(u.ID)}
 	sess.used.Store(used)
 	return sess, nil
 }
@@ -83,7 +87,9 @@ func (s *session) resolve(p string) (resolved, error) {
 	case areaMe:
 		areaRoot, area, writable = s.svc.privRoot(s.user.Name), areaMe, true
 	case areaPublic:
-		areaRoot, area, writable = s.svc.pubRoot(), areaPublic, s.pubWrite
+		// The member's own public area (served anonymously at ~<name>/public);
+		// they read/write it.
+		areaRoot, area, writable = s.svc.userPub(s.user.Name), areaPublic, true
 	default:
 		return resolved{}, os.ErrNotExist
 	}
@@ -303,8 +309,8 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	limit := int64(-1) // public area is operator-managed, unmetered
-	if res.area == areaMe {
+	limit := int64(-1)
+	if metered(res.area) {
 		if limit = s.quota - (s.used.Load() - existing); limit < 0 {
 			limit = 0
 		}
@@ -318,7 +324,7 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 	if cerr != nil {
 		return 0, cerr
 	}
-	if res.area == areaMe {
+	if metered(res.area) {
 		s.used.Add(n - existing)
 	}
 	return n, nil
@@ -380,9 +386,8 @@ func (s *session) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	if err != nil {
 		return nil, sftpErr(err)
 	}
-	// The public area is operator-managed (no per-user quota); the private
-	// workspace is metered.
-	if res.area != areaMe {
+	// Both of the member's owned areas (/me and their /public) are metered.
+	if !metered(res.area) {
 		return f, nil
 	}
 	return &quotaWriter{f: f, sess: s, tracked: startSize}, nil
