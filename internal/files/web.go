@@ -27,6 +27,10 @@ type WebConfig struct {
 	Authenticate func(user, pass string) (store.User, bool, error)
 	// Title is shown in the page header (e.g. "files.profullstack.com").
 	Title string
+	// SiteBase is the base URL of the member homepages ("sites"), e.g.
+	// "https://bbs.profullstack.com". The ~user directory links each member to
+	// SiteBase + "/~" + name. Empty disables the site link.
+	SiteBase string
 	// SessionTTL defaults to 12h.
 	SessionTTL time.Duration
 }
@@ -330,14 +334,23 @@ func (h *webSrv) renderLogin(w http.ResponseWriter, errMsg string) {
 	_ = loginTmpl.Execute(w, loginData{Title: h.cfg.Title, Err: errMsg})
 }
 
-// renderIndex serves the public landing page: a directory of members' ~user
-// sites (each linking to their public /site), plus a link to the shared /public
-// area and a sign-in link. No authentication required.
+// renderIndex serves the public landing page: a directory of every member,
+// each linked to their site (homepage on the BBS) and their public files folder
+// (~name/public here), plus a link to the shared /public area and a sign-in
+// link. No authentication required.
 func (h *webSrv) renderIndex(w http.ResponseWriter, errMsg string) {
 	data := indexData{Title: h.cfg.Title, Err: errMsg}
-	if peers, err := h.svc.PublicSites(); err == nil {
-		for _, p := range peers {
-			data.Peers = append(data.Peers, indexPeer{Name: p.Name, URL: "/~" + p.Name + "/", UsedH: humanSize(p.Bytes)})
+	if members, err := h.svc.Members(); err == nil {
+		for _, m := range members {
+			peer := indexPeer{
+				Name:     m.Name,
+				FilesURL: "/~" + m.Name + "/public/",
+				UsedH:    humanSize(m.PublicBytes),
+			}
+			if h.cfg.SiteBase != "" {
+				peer.SiteURL = strings.TrimRight(h.cfg.SiteBase, "/") + "/~" + m.Name
+			}
+			data.Peers = append(data.Peers, peer)
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -345,10 +358,10 @@ func (h *webSrv) renderIndex(w http.ResponseWriter, errMsg string) {
 }
 
 // handleAnon serves the unauthenticated, read-only public surface: the shared
-// /public area and each member's public site at /~<name>. Directories render a
-// browse listing; files stream with a content type and a short cache. It is
-// confined to the area root by the same safeJoin guard as SFTP — there is no
-// path to a member's private /me or above the area root.
+// /public area and each member's public files at /~<name>/public. Directories
+// render a browse listing; files stream with a content type and a short cache.
+// It is confined to the area root by the same safeJoin guard as SFTP — only a
+// member's ~/public subfolder is exposed, never the rest of their private /me.
 func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -358,18 +371,32 @@ func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	var name, rel, prefix, heading string
 	switch {
 	case upath == "/public" || strings.HasPrefix(upath, "/public/"):
+		// The shared/global public area.
 		name, rel, prefix, heading = "", strings.TrimPrefix(upath, "/public"), "/public", "/public"
 	case strings.HasPrefix(upath, "/~"):
+		// A member's own public files: /~<name>/public[/...]. The bare ~name (or
+		// anything not under /public) is not a file surface — only ~name/public is
+		// exposed; the rest of the member's home stays private.
 		seg := strings.SplitN(strings.TrimPrefix(upath, "/~"), "/", 2)
 		name = seg[0]
 		if name == "" {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+		after := ""
 		if len(seg) == 2 {
-			rel = "/" + seg[1]
+			after = "/" + seg[1]
 		}
-		prefix, heading = "/~"+name, "~"+name
+		if after == "" || after == "/" {
+			http.Redirect(w, r, "/~"+name+"/public/", http.StatusSeeOther)
+			return
+		}
+		if after != "/public" && !strings.HasPrefix(after, "/public/") {
+			http.NotFound(w, r)
+			return
+		}
+		rel = strings.TrimPrefix(after, "/public")
+		prefix, heading = "/~"+name+"/public", "~"+name+"/public"
 	default:
 		http.NotFound(w, r)
 		return
@@ -386,10 +413,9 @@ func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	}
 	fi, err := os.Stat(real)
 	if err != nil {
-		// A known member whose site dir hasn't been created yet (it is created
-		// lazily on their first files session) renders as an empty listing — not
-		// a 404 — so ~name is reachable as soon as the account exists. A missing
-		// sub-path still 404s.
+		// A known member with an empty/not-yet-created ~/public folder renders as
+		// an empty listing — not a 404 — so ~name/public is reachable the moment
+		// the account exists. A missing sub-path still 404s.
 		if os.IsNotExist(err) && path.Clean("/"+strings.TrimPrefix(rel, "/")) == "/" {
 			h.renderAnonDir(w, prefix, heading, rel, real)
 			return
@@ -562,13 +588,14 @@ var listTmpl = template.Must(template.New("list").Parse(`<!doctype html><html><h
 </tr>{{end}}
 {{if not .Entries}}<tr><td colspan=4 class=muted>(empty)</td></tr>{{end}}
 </table>
-<p class=muted style="margin-top:20px">Your <code>/site</code> files are public at <a href="/~{{.User}}/">~{{.User}}</a>. Also reachable over SFTP with your SSH key: <code>sftp files@{{.Title}}</code>.</p>
+<p class=muted style="margin-top:20px">Files in <code>/me/public</code> are public at <a href="/~{{.User}}/public/">~{{.User}}/public</a>. Reachable over SFTP with your SSH key: <code>sftp files@{{.Title}}</code>.</p>
 </div></body></html>`))
 
 type indexPeer struct {
-	Name  string
-	URL   string
-	UsedH string
+	Name     string
+	FilesURL string // /~name/public/
+	SiteURL  string // https://bbs.../~name  (empty if no SiteBase)
+	UsedH    string
 }
 
 type indexData struct {
@@ -596,22 +623,25 @@ type anonData struct {
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>{{.Title}}</title><style>` + baseCSS + `</style></head>
 <body><div class=wrap>
-<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/public/">/public</a> · <a href="/login">Sign in</a></div></div>
+<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/public/">shared /public</a> · <a href="/login">Sign in</a></div></div>
 {{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
-<p class=muted>Public member sites. Each links to that member's shared <code>/site</code> files. <a href="/login">Sign in</a> to manage your own files (private <code>/me</code> + your <code>/site</code>).</p>
-<table><tr><th>Member</th><th class=right>Size</th></tr>
-{{range .Peers}}<tr><td>📂 <a href="{{.URL}}">~{{.Name}}</a></td><td class=right>{{.UsedH}}</td></tr>{{end}}
-{{if not .Peers}}<tr><td colspan=2 class=muted>No public sites yet — sign in and add files to <code>/site</code>.</td></tr>{{end}}
+<p class=muted>Member directory. Each member has a <b>site</b> (their homepage on the BBS) and a <b>public files</b> folder here. <a href="/login">Sign in</a> to manage your own files.</p>
+<table><tr><th>Member</th><th>Site</th><th>Public files</th><th class=right>Size</th></tr>
+{{range .Peers}}<tr><td>👤 {{.Name}}</td>
+<td>{{if .SiteURL}}<a href="{{.SiteURL}}">site ↗</a>{{else}}<span class=muted>—</span>{{end}}</td>
+<td>📂 <a href="{{.FilesURL}}">~{{.Name}}/public</a></td>
+<td class=right>{{.UsedH}}</td></tr>{{end}}
+{{if not .Peers}}<tr><td colspan=4 class=muted>No members yet.</td></tr>{{end}}
 </table>
-<p class=muted style="margin-top:20px">Publish over SFTP: <code>scp file files@{{.Title}}:/site/</code> → appears at <code>~yourname</code>.</p>
+<p class=muted style="margin-top:20px">Publish over SFTP: <code>scp file files@{{.Title}}:/me/public/</code> → appears at <code>~yourname/public</code>.</p>
 </div></body></html>`))
 
 var anonTmpl = template.Must(template.New("anon").Parse(`<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>{{.CurPath}} · {{.Title}}</title><style>` + baseCSS + `</style></head>
 <body><div class=wrap>
-<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/">all sites</a> · <a href="/login">Sign in</a></div></div>
+<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/">members</a> · <a href="/login">Sign in</a></div></div>
 <div class=crumbs><b>{{.CurPath}}</b></div>
-<p class=muted>Read-only public area.</p>
+<p class=muted>Read-only public files.</p>
 <table><tr><th>Name</th><th class=right>Size</th><th>Modified</th></tr>
 {{if .UpOK}}<tr><td><a href="{{.UpURL}}">⬑ ..</a></td><td></td><td></td></tr>{{end}}
 {{range .Entries}}<tr>

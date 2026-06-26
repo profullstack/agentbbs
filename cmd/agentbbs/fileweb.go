@@ -23,7 +23,10 @@ func (a *app) startFilesWeb() {
 	}
 	addr := env("AGENTBBS_FILES_WEB_ADDR", "127.0.0.1:8092")
 	title := env("AGENTBBS_FILES_WEB_TITLE", "files."+strings.TrimPrefix(a.host, "bbs."))
-	h := a.files.WebHandler(files.WebConfig{Authenticate: a.filesWebAuth, Title: title})
+	// Member homepages ("sites") live on the BBS host; the ~user directory links
+	// each member to https://<bbs-host>/~name alongside their public files here.
+	siteBase := env("AGENTBBS_FILES_WEB_SITE_BASE", "https://"+a.host)
+	h := a.files.WebHandler(files.WebConfig{Authenticate: a.filesWebAuth, Title: title, SiteBase: siteBase})
 	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("files web listening", "addr", addr)

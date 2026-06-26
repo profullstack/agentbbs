@@ -16,16 +16,15 @@ import (
 )
 
 // area names exposed at the virtual root.
+//
+// A member's home is /me (private). Its public/ subdirectory is exposed
+// anonymously on the web at ~<name>/public — the unix ~/public convention — so
+// "publish a file" just means dropping it in /me/public. The single shared
+// /public area is the old-school BBS file area.
 const (
-	areaMe     = "me"     // private, per-user workspace
-	areaSite   = "site"   // the member's own public root (served at ~<name>)
-	areaPublic = "public" // the single shared public area
+	areaMe     = "me"
+	areaPublic = "public"
 )
-
-// metered reports whether writes to an area count against the member's quota.
-// The member's own areas (/me and /site) are metered; the shared /public is
-// operator-managed and unmetered.
-func metered(area string) bool { return area == areaMe || area == areaSite }
 
 // errEscape is returned when a resolved path would leave its area root. It maps
 // to an SFTP permission-denied; it must never reach the client as a real path.
@@ -43,13 +42,12 @@ type session struct {
 }
 
 func (s *Service) newSession(u store.User) (*session, error) {
-	if err := s.ensureWorkspace(u.Name); err != nil {
+	// Ensure both the private home and its public/ subfolder exist, so writing to
+	// /me/public (which surfaces at ~name/public) just works.
+	if err := s.ensurePublicHome(u.Name); err != nil {
 		return nil, err
 	}
-	if err := s.ensureSite(u.Name); err != nil {
-		return nil, err
-	}
-	used, err := s.ownedUsage(u.Name)
+	used, err := dirSize(s.privRoot(u.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -84,10 +82,6 @@ func (s *session) resolve(p string) (resolved, error) {
 	switch seg[0] {
 	case areaMe:
 		areaRoot, area, writable = s.svc.privRoot(s.user.Name), areaMe, true
-	case areaSite:
-		// The member's own public root: they read/write it, the world reads it
-		// anonymously at ~<name>.
-		areaRoot, area, writable = s.svc.siteRoot(s.user.Name), areaSite, true
 	case areaPublic:
 		areaRoot, area, writable = s.svc.pubRoot(), areaPublic, s.pubWrite
 	default:
@@ -165,7 +159,7 @@ func (s *session) entries(vpath string) ([]Entry, error) {
 		return nil, err
 	}
 	if res.root {
-		return []Entry{{Name: areaMe, IsDir: true}, {Name: areaSite, IsDir: true}, {Name: areaPublic, IsDir: true}}, nil
+		return []Entry{{Name: areaMe, IsDir: true}, {Name: areaPublic, IsDir: true}}, nil
 	}
 	des, err := os.ReadDir(res.real)
 	if err != nil {
@@ -309,8 +303,8 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	limit := int64(-1) // shared public area is operator-managed, unmetered
-	if metered(res.area) {
+	limit := int64(-1) // public area is operator-managed, unmetered
+	if res.area == areaMe {
 		if limit = s.quota - (s.used.Load() - existing); limit < 0 {
 			limit = 0
 		}
@@ -324,7 +318,7 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 	if cerr != nil {
 		return 0, cerr
 	}
-	if metered(res.area) {
+	if res.area == areaMe {
 		s.used.Add(n - existing)
 	}
 	return n, nil
@@ -386,9 +380,9 @@ func (s *session) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	if err != nil {
 		return nil, sftpErr(err)
 	}
-	// The shared public area is operator-managed (no per-user quota); the
-	// member's own areas (/me and /site) are metered.
-	if !metered(res.area) {
+	// The public area is operator-managed (no per-user quota); the private
+	// workspace is metered.
+	if res.area != areaMe {
 		return f, nil
 	}
 	return &quotaWriter{f: f, sess: s, tracked: startSize}, nil
@@ -456,7 +450,7 @@ func (s *session) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	switch r.Method {
 	case "List":
 		if res.root {
-			return listerAt{dirInfo(areaMe), dirInfo(areaSite), dirInfo(areaPublic)}, nil
+			return listerAt{dirInfo(areaMe), dirInfo(areaPublic)}, nil
 		}
 		entries, err := os.ReadDir(res.real)
 		if err != nil {

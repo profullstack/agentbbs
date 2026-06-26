@@ -700,19 +700,21 @@ FILES_SITE="
 ${FILES_DOMAIN} {
 	encode zstd gzip
 
-	# Everything is served by the agentbbs file-manager on loopback. It serves,
-	# all from the same virtual storage as SFTP:
-	#   /                  public directory of members' ~user sites (no auth)
-	#   /~<name>[/...]     a member's public /site — anon read-only browse + files
+	# A pure file server (NOT a website host — member homepages live on the BBS
+	# at https://${DOMAIN}/~<name>). The agentbbs file-manager on loopback serves:
+	#   /                  directory of all members (links to each one's BBS site
+	#                      and their public files here) — no auth
+	#   /~<name>/public[/] a member's public files folder — anon read-only browse
 	#   /public[/...]      the shared public area — anon read-only browse + files
-	#   (signed in)        the member's private /me, their /site, and /public
+	#   (signed in)        the member's private /me (whose public/ subdir is the
+	#                      ~name/public surface) and the shared /public
 	# Clean URLs map 1:1 to the SFTP paths, so share links just work:
 	#   scp dist.crx files@${FILES_DOMAIN}:/public/extensions/acme/
 	#     -> https://${FILES_DOMAIN}/public/extensions/acme/dist.crx
-	#   scp index.html files@${FILES_DOMAIN}:/site/
-	#     -> https://${FILES_DOMAIN}/~<name>/index.html
-	# The anon surface has no route to a member's private /me (see internal/files
-	# web tests); it is structurally read-only and area-confined.
+	#   scp index.html files@${FILES_DOMAIN}:/me/public/
+	#     -> https://${FILES_DOMAIN}/~<name>/public/index.html
+	# The anon surface only ever exposes ~name/public, never the rest of a
+	# member's private /me (see internal/files web tests); it is read-only.
 	reverse_proxy http://${FILES_WEB_ADDR}
 }
 "

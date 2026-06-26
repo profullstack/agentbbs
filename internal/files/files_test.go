@@ -169,20 +169,18 @@ func TestUsage(t *testing.T) {
 	}
 }
 
-func TestUsageCountsSite(t *testing.T) {
+func TestUsageCountsPublicHome(t *testing.T) {
 	svc, _, u := newTestService(t)
-	if err := svc.ensureWorkspace(u.Name); err != nil {
+	if err := svc.ensurePublicHome(u.Name); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.ensureSite(u.Name); err != nil {
-		t.Fatal(err)
-	}
-	// 512 bytes private (/me) + 256 bytes public site (/site) both count toward
-	// the member's owned-usage gauge; the shared /public area does not.
+	// A member's ~/public folder lives inside their private /me home, so both the
+	// top-level private file and the public file count toward the quota gauge;
+	// the shared /public area does not.
 	if err := os.WriteFile(filepath.Join(svc.privRoot(u.Name), "a.txt"), []byte(strings.Repeat("x", 512)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svc.siteRoot(u.Name), "b.txt"), []byte(strings.Repeat("y", 256)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.publicHome(u.Name), "b.txt"), []byte(strings.Repeat("y", 256)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(svc.pubRoot(), "shared.txt"), []byte(strings.Repeat("z", 9999)), 0o644); err != nil {
@@ -193,7 +191,7 @@ func TestUsageCountsSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if usage.Bytes != 768 {
-		t.Errorf("usage = %d, want 768 (512 /me + 256 /site, shared /public excluded)", usage.Bytes)
+		t.Errorf("usage = %d, want 768 (512 /me + 256 /me/public, shared /public excluded)", usage.Bytes)
 	}
 }
 

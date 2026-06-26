@@ -162,22 +162,29 @@ func TestWebAnonPublicSite(t *testing.T) {
 	h, _ := webTestHandler(t)
 	cookie := loginCookie(t, h)
 
-	// alice publishes to her own public /site and to the shared /public.
-	uploadTo(t, h, cookie, "/site", "hello.txt", "from alice site")
+	// alice publishes to her own public folder (/me/public) and to /public.
+	uploadTo(t, h, cookie, "/me/public", "hello.txt", "from alice")
 	uploadTo(t, h, cookie, "/public", "shared.txt", "shared file")
 
-	// The unauthenticated root lists ~alice (a public-site directory), not a wall.
+	// The unauthenticated root lists every member with a link to ~alice/public.
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-	if body := rr.Body.String(); !strings.Contains(body, "~alice") {
-		t.Fatalf("index missing ~alice directory entry: %.300s", body)
+	if body := rr.Body.String(); !strings.Contains(body, "/~alice/public/") {
+		t.Fatalf("index missing ~alice/public link: %.300s", body)
 	}
 
-	// Anonymous (no cookie) can download a member's published site file.
+	// Anonymous (no cookie) can download a member's published file.
 	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/hello.txt", nil))
-	if got, _ := io.ReadAll(rr.Body); string(got) != "from alice site" {
-		t.Fatalf("~alice file: got %q", got)
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/public/hello.txt", nil))
+	if got, _ := io.ReadAll(rr.Body); string(got) != "from alice" {
+		t.Fatalf("~alice/public file: got %q", got)
+	}
+
+	// Bare ~alice redirects to ~alice/public/.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice", nil))
+	if rr.Code != http.StatusSeeOther || rr.Header().Get("Location") != "/~alice/public/" {
+		t.Fatalf("~alice: want redirect to /~alice/public/, got %d %q", rr.Code, rr.Header().Get("Location"))
 	}
 
 	// Anonymous can download from the shared public area via a clean URL.
@@ -189,16 +196,16 @@ func TestWebAnonPublicSite(t *testing.T) {
 
 	// Anonymous directory browse renders a listing.
 	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/", nil))
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/public/", nil))
 	if body := rr.Body.String(); !strings.Contains(body, "hello.txt") {
-		t.Fatalf("~alice browse missing file: %.300s", body)
+		t.Fatalf("~alice/public browse missing file: %.300s", body)
 	}
 }
 
 func TestWebAnonMemberSiteEmptyNot404(t *testing.T) {
-	// A registered member who has not published anything yet (no site dir on
-	// disk) is reachable at ~name as an empty listing, not a 404. A missing file
-	// under them, and an unknown member, both still 404.
+	// A registered member who has not published anything yet (no public folder on
+	// disk) is reachable at ~name/public as an empty listing, not a 404. A missing
+	// file under them, and an unknown member, both still 404.
 	svc, st, _ := newTestService(t)
 	if _, err := st.EnsureUser("bob", "member", "SHA256:bobkey"); err != nil {
 		t.Fatal(err)
@@ -206,22 +213,29 @@ func TestWebAnonMemberSiteEmptyNot404(t *testing.T) {
 	h := svc.WebHandler(WebConfig{Title: "files.test"})
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/", nil))
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/public/", nil))
 	if rr.Code != http.StatusOK {
-		t.Fatalf("~bob (member, empty site): want 200, got %d", rr.Code)
+		t.Fatalf("~bob/public (member, empty): want 200, got %d", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), "(empty)") {
-		t.Fatalf("~bob should render an empty listing: %.200s", rr.Body.String())
+		t.Fatalf("~bob/public should render an empty listing: %.200s", rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/nope.txt", nil))
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/public/nope.txt", nil))
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("~bob/nope.txt: want 404, got %d", rr.Code)
+		t.Fatalf("~bob/public/nope.txt: want 404, got %d", rr.Code)
+	}
+
+	// Anything under ~bob that is not /public is not exposed.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/secret", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("~bob/secret: want 404, got %d", rr.Code)
 	}
 
 	rr = httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~nobody/", nil))
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~nobody/public/", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("~nobody (unknown): want 404, got %d", rr.Code)
 	}
@@ -232,13 +246,15 @@ func TestWebAnonCannotEscape(t *testing.T) {
 	cookie := loginCookie(t, h)
 	uploadTo(t, h, cookie, "/me", "secret.txt", "private")
 
-	// There is no anonymous route into /me, and traversal out of a public area
-	// must not reach the private workspace.
+	// Only ~name/public is exposed; traversal out of a public area must not reach
+	// the private home or anything above it.
 	for _, p := range []string{
-		"/~alice/../../users/alice/secret.txt",
+		"/~alice/public/../../secret.txt",
+		"/~alice/public/../../../users/alice/secret.txt",
 		"/public/../users/alice/secret.txt",
-		"/~alice/..%2f..%2fusers%2falice%2fsecret.txt",
-		"/~ghost/anything", // unknown member
+		"/~alice/public/..%2f..%2fsecret.txt",
+		"/~alice/secret.txt", // not under /public
+		"/~ghost/public/x",   // unknown member
 	} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, p, nil))
