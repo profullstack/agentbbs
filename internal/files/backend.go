@@ -229,6 +229,12 @@ func (s *Service) AnonRoot(name string) (root string, ok bool, err error) {
 	if !found || u.Banned {
 		return "", false, nil
 	}
+	// Materialize the (idempotent) site dir so ~name is browsable the moment the
+	// account exists — before the member's first SFTP/web session creates it.
+	// Without this, joining onto a missing root trips the escape guard.
+	if err := s.ensureSite(u.Name); err != nil {
+		return "", false, err
+	}
 	return s.siteRoot(u.Name), true, nil
 }
 

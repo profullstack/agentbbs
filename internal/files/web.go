@@ -386,6 +386,14 @@ func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 	}
 	fi, err := os.Stat(real)
 	if err != nil {
+		// A known member whose site dir hasn't been created yet (it is created
+		// lazily on their first files session) renders as an empty listing — not
+		// a 404 — so ~name is reachable as soon as the account exists. A missing
+		// sub-path still 404s.
+		if os.IsNotExist(err) && path.Clean("/"+strings.TrimPrefix(rel, "/")) == "/" {
+			h.renderAnonDir(w, prefix, heading, rel, real)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -408,10 +416,11 @@ func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
 // on-disk directory (already confined by handleAnon).
 func (h *webSrv) renderAnonDir(w http.ResponseWriter, prefix, heading, rel, real string) {
 	des, err := os.ReadDir(real)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		http.Error(w, "cannot list files", http.StatusInternalServerError)
 		return
 	}
+	// A not-yet-created site dir lists as empty (des is nil).
 	rel = path.Clean("/" + strings.TrimPrefix(rel, "/"))
 	data := anonData{Title: h.cfg.Title, CurPath: heading}
 	if rel != "/" {

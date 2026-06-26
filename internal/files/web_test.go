@@ -195,6 +195,38 @@ func TestWebAnonPublicSite(t *testing.T) {
 	}
 }
 
+func TestWebAnonMemberSiteEmptyNot404(t *testing.T) {
+	// A registered member who has not published anything yet (no site dir on
+	// disk) is reachable at ~name as an empty listing, not a 404. A missing file
+	// under them, and an unknown member, both still 404.
+	svc, st, _ := newTestService(t)
+	if _, err := st.EnsureUser("bob", "member", "SHA256:bobkey"); err != nil {
+		t.Fatal(err)
+	}
+	h := svc.WebHandler(WebConfig{Title: "files.test"})
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("~bob (member, empty site): want 200, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "(empty)") {
+		t.Fatalf("~bob should render an empty listing: %.200s", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~bob/nope.txt", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("~bob/nope.txt: want 404, got %d", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~nobody/", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("~nobody (unknown): want 404, got %d", rr.Code)
+	}
+}
+
 func TestWebAnonCannotEscape(t *testing.T) {
 	h, _ := webTestHandler(t)
 	cookie := loginCookie(t, h)
