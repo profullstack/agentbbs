@@ -124,6 +124,108 @@ func TestWebRoundTrip(t *testing.T) {
 	}
 }
 
+// loginCookie logs alice in and returns her session cookie.
+func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
+	t.Helper()
+	form := url.Values{"user": {"alice"}, "pass": {"secret"}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rr, req)
+	cs := rr.Result().Cookies()
+	if len(cs) == 0 {
+		t.Fatal("login did not set a cookie")
+	}
+	return cs[0]
+}
+
+// uploadTo uploads body to dir as the holder of cookie.
+func uploadTo(t *testing.T, h http.Handler, cookie *http.Cookie, dir, name, body string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("dir", dir)
+	fw, _ := mw.CreateFormFile("file", name)
+	_, _ = fw.Write([]byte(body))
+	_ = mw.Close()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("upload to %s: want redirect, got %d (%s)", dir, rr.Code, rr.Body.String())
+	}
+}
+
+func TestWebAnonPublicSite(t *testing.T) {
+	h, _ := webTestHandler(t)
+	cookie := loginCookie(t, h)
+
+	// alice publishes to her own public /site and to the shared /public.
+	uploadTo(t, h, cookie, "/site", "hello.txt", "from alice site")
+	uploadTo(t, h, cookie, "/public", "shared.txt", "shared file")
+
+	// The unauthenticated root lists ~alice (a public-site directory), not a wall.
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+	if body := rr.Body.String(); !strings.Contains(body, "~alice") {
+		t.Fatalf("index missing ~alice directory entry: %.300s", body)
+	}
+
+	// Anonymous (no cookie) can download a member's published site file.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/hello.txt", nil))
+	if got, _ := io.ReadAll(rr.Body); string(got) != "from alice site" {
+		t.Fatalf("~alice file: got %q", got)
+	}
+
+	// Anonymous can download from the shared public area via a clean URL.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/public/shared.txt", nil))
+	if got, _ := io.ReadAll(rr.Body); string(got) != "shared file" {
+		t.Fatalf("/public file: got %q", got)
+	}
+
+	// Anonymous directory browse renders a listing.
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/~alice/", nil))
+	if body := rr.Body.String(); !strings.Contains(body, "hello.txt") {
+		t.Fatalf("~alice browse missing file: %.300s", body)
+	}
+}
+
+func TestWebAnonCannotEscape(t *testing.T) {
+	h, _ := webTestHandler(t)
+	cookie := loginCookie(t, h)
+	uploadTo(t, h, cookie, "/me", "secret.txt", "private")
+
+	// There is no anonymous route into /me, and traversal out of a public area
+	// must not reach the private workspace.
+	for _, p := range []string{
+		"/~alice/../../users/alice/secret.txt",
+		"/public/../users/alice/secret.txt",
+		"/~alice/..%2f..%2fusers%2falice%2fsecret.txt",
+		"/~ghost/anything", // unknown member
+	} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, p, nil))
+		if body, _ := io.ReadAll(rr.Body); strings.Contains(string(body), "private") {
+			t.Fatalf("anon path %q leaked private content", p)
+		}
+		if rr.Code == http.StatusOK && strings.Contains(rr.Body.String(), "secret.txt") {
+			t.Fatalf("anon path %q exposed /me", p)
+		}
+	}
+
+	// And the authed download API still rejects /me without a session.
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/download?path=/me/secret.txt", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("anon /me download: want 401, got %d", rr.Code)
+	}
+}
+
 func TestWebPublicReadOnlyByDefault(t *testing.T) {
 	h, _ := webTestHandler(t)
 	// Log in.

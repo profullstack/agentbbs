@@ -169,6 +169,34 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+func TestUsageCountsSite(t *testing.T) {
+	svc, _, u := newTestService(t)
+	if err := svc.ensureWorkspace(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ensureSite(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	// 512 bytes private (/me) + 256 bytes public site (/site) both count toward
+	// the member's owned-usage gauge; the shared /public area does not.
+	if err := os.WriteFile(filepath.Join(svc.privRoot(u.Name), "a.txt"), []byte(strings.Repeat("x", 512)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.siteRoot(u.Name), "b.txt"), []byte(strings.Repeat("y", 256)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.pubRoot(), "shared.txt"), []byte(strings.Repeat("z", 9999)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := svc.Usage(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Bytes != 768 {
+		t.Errorf("usage = %d, want 768 (512 /me + 256 /site, shared /public excluded)", usage.Bytes)
+	}
+}
+
 func TestRevokeBlocksAndQuotaOverride(t *testing.T) {
 	svc, st, u := newTestService(t)
 	if err := st.SetFilesQuota(u.ID, 4096); err != nil {

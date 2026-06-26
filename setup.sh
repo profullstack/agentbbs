@@ -700,19 +700,19 @@ FILES_SITE="
 ${FILES_DOMAIN} {
 	encode zstd gzip
 
-	# Public file area — unauthenticated, read-only HTTP for the shared /public
-	# directory, so download links (e.g. extension .crx/.zip) work for everyone.
-	# Maps 1:1 to the SFTP path: a member who runs
+	# Everything is served by the agentbbs file-manager on loopback. It serves,
+	# all from the same virtual storage as SFTP:
+	#   /                  public directory of members' ~user sites (no auth)
+	#   /~<name>[/...]     a member's public /site — anon read-only browse + files
+	#   /public[/...]      the shared public area — anon read-only browse + files
+	#   (signed in)        the member's private /me, their /site, and /public
+	# Clean URLs map 1:1 to the SFTP paths, so share links just work:
 	#   scp dist.crx files@${FILES_DOMAIN}:/public/extensions/acme/
-	# gets the URL https://${FILES_DOMAIN}/public/extensions/acme/dist.crx .
-	# Everything else falls through to the auth'd web file manager below.
-	handle_path /public/* {
-		root * ${DATA_DIR}/files/public
-		header Cache-Control \"public, max-age=300\"
-		file_server
-	}
-
-	# Member web file manager (webmail-password login; /me + /public browsing).
+	#     -> https://${FILES_DOMAIN}/public/extensions/acme/dist.crx
+	#   scp index.html files@${FILES_DOMAIN}:/site/
+	#     -> https://${FILES_DOMAIN}/~<name>/index.html
+	# The anon surface has no route to a member's private /me (see internal/files
+	# web tests); it is structurally read-only and area-confined.
 	reverse_proxy http://${FILES_WEB_ADDR}
 }
 "

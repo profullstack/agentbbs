@@ -41,8 +41,8 @@ func TestE2E_RootListing(t *testing.T) {
 		names = append(names, fi.Name())
 	}
 	sort.Strings(names)
-	if len(names) != 2 || names[0] != "me" || names[1] != "public" {
-		t.Errorf("root listing = %v, want [me public]", names)
+	if len(names) != 3 || names[0] != "me" || names[1] != "public" || names[2] != "site" {
+		t.Errorf("root listing = %v, want [me public site]", names)
 	}
 }
 

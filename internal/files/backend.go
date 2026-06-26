@@ -26,6 +26,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,7 +80,7 @@ func New(st FilesStore, cfg Config) (*Service, error) {
 		cfg.DefaultQuota = DefaultQuota
 	}
 	cfg.Root = filepath.Clean(cfg.Root)
-	for _, d := range []string{cfg.Root, filepath.Join(cfg.Root, "users"), filepath.Join(cfg.Root, "public")} {
+	for _, d := range []string{cfg.Root, filepath.Join(cfg.Root, "users"), filepath.Join(cfg.Root, "sites"), filepath.Join(cfg.Root, "public")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
@@ -95,9 +96,36 @@ func (s *Service) privRoot(user string) string {
 // pubRoot is the absolute shared public-area directory.
 func (s *Service) pubRoot() string { return filepath.Join(s.cfg.Root, "public") }
 
+// siteRoot is the absolute per-user public ("site") directory for a member,
+// served unauthenticated at ~<name> on the web file host.
+func (s *Service) siteRoot(user string) string {
+	return filepath.Join(s.cfg.Root, "sites", user)
+}
+
 // ensureWorkspace creates a member's private workspace if absent.
 func (s *Service) ensureWorkspace(user string) error {
 	return os.MkdirAll(s.privRoot(user), 0o700)
+}
+
+// ensureSite creates a member's public site directory if absent. It is
+// world-readable (0o755) because the web host serves it anonymously at ~<name>.
+func (s *Service) ensureSite(user string) error {
+	return os.MkdirAll(s.siteRoot(user), 0o755)
+}
+
+// ownedUsage sums the member-owned areas — their private /me workspace plus
+// their public /site — for the quota gauge. The shared /public area is
+// operator-managed and is not metered per user.
+func (s *Service) ownedUsage(user string) (int64, error) {
+	priv, err := dirSize(s.privRoot(user))
+	if err != nil {
+		return 0, err
+	}
+	site, err := dirSize(s.siteRoot(user))
+	if err != nil {
+		return 0, err
+	}
+	return priv + site, nil
 }
 
 // quotaFor returns the effective quota (bytes) for a user: their per-user
@@ -156,6 +184,58 @@ func dirSize(root string) (int64, error) {
 	return total, err
 }
 
+// SitePeer is a member with a published public site, for the anonymous ~user
+// directory index on the web file host.
+type SitePeer struct {
+	Name  string
+	Bytes int64
+}
+
+// PublicSites lists members who have published anything to their public /site,
+// sorted by name — the source for the anonymous ~user directory at the root of
+// the web file host. Members with an empty site are omitted.
+func (s *Service) PublicSites() ([]SitePeer, error) {
+	users, err := s.st.ListUsers(10000)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SitePeer, 0, len(users))
+	for _, u := range users {
+		if u.Banned {
+			continue
+		}
+		n, err := dirSize(s.siteRoot(u.Name))
+		if err != nil || n == 0 {
+			continue
+		}
+		out = append(out, SitePeer{Name: u.Name, Bytes: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// AnonRoot resolves the on-disk root for an anonymous, read-only browse target:
+// the shared public area (name == "") or a member's public site (name = the
+// ~handle). ok is false when the named member does not exist or is banned. The
+// returned root is a confinement boundary — callers must safeJoin onto it.
+func (s *Service) AnonRoot(name string) (root string, ok bool, err error) {
+	if name == "" {
+		return s.pubRoot(), true, nil
+	}
+	u, found, err := s.st.UserByName(name)
+	if err != nil {
+		return "", false, err
+	}
+	if !found || u.Banned {
+		return "", false, nil
+	}
+	return s.siteRoot(u.Name), true, nil
+}
+
+// SafeJoin exposes the area-confinement join (lexical + symlink-escape guard)
+// for the web host's anonymous read-only surface.
+func (s *Service) SafeJoin(root, rel string) (string, error) { return safeJoin(root, rel) }
+
 // Usage is a member's workspace usage snapshot.
 type Usage struct {
 	Bytes int64
@@ -170,9 +250,10 @@ func (u Usage) Free() int64 {
 	return u.Quota - u.Bytes
 }
 
-// Usage computes a member's private-workspace usage against their quota.
+// Usage computes a member's owned-storage usage (private /me + public /site)
+// against their quota.
 func (s *Service) Usage(u store.User) (Usage, error) {
-	used, err := dirSize(s.privRoot(u.Name))
+	used, err := s.ownedUsage(u.Name)
 	if err != nil {
 		return Usage{}, err
 	}

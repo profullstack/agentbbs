@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,13 +58,15 @@ func (s *Service) WebHandler(cfg WebConfig) http.Handler {
 	}
 	h := &webSrv{svc: s, cfg: cfg, sess: map[string]webSession{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", h.handleRoot)
+	mux.HandleFunc("/", h.handleRoot) // index (~user dir) + /~name browsing + authed manager
 	mux.HandleFunc("/login", h.handleLogin)
 	mux.HandleFunc("/logout", h.handleLogout)
 	mux.HandleFunc("/download", h.handleDownload)
 	mux.HandleFunc("/upload", h.handleUpload)
 	mux.HandleFunc("/mkdir", h.handleMkdir)
 	mux.HandleFunc("/delete", h.handleDelete)
+	mux.HandleFunc("/public", h.handleAnon)  // shared public area (anon read-only)
+	mux.HandleFunc("/public/", h.handleAnon) // shared public area (anon read-only)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	return mux
 }
@@ -121,9 +124,16 @@ func randHex(n int) string {
 // --- handlers ---------------------------------------------------------------
 
 func (h *webSrv) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// Anonymous per-member public browsing: /~<name>[/...]. No session required.
+	if strings.HasPrefix(r.URL.Path, "/~") {
+		h.handleAnon(w, r)
+		return
+	}
 	name, ok := h.lookup(r)
 	if !ok {
-		h.renderLogin(w, "")
+		// Not signed in: the root is a public directory of members' ~user sites,
+		// with a sign-in link — not a login wall.
+		h.renderIndex(w, "")
 		return
 	}
 	vpath := cleanVPath(r.URL.Query().Get("path"))
@@ -171,7 +181,12 @@ func (h *webSrv) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (h *webSrv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// GET /login renders the sign-in form (the root is the public index).
+		if _, ok := h.lookup(r); ok {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		h.renderLogin(w, "")
 		return
 	}
 	_ = r.ParseForm()
@@ -315,6 +330,128 @@ func (h *webSrv) renderLogin(w http.ResponseWriter, errMsg string) {
 	_ = loginTmpl.Execute(w, loginData{Title: h.cfg.Title, Err: errMsg})
 }
 
+// renderIndex serves the public landing page: a directory of members' ~user
+// sites (each linking to their public /site), plus a link to the shared /public
+// area and a sign-in link. No authentication required.
+func (h *webSrv) renderIndex(w http.ResponseWriter, errMsg string) {
+	data := indexData{Title: h.cfg.Title, Err: errMsg}
+	if peers, err := h.svc.PublicSites(); err == nil {
+		for _, p := range peers {
+			data.Peers = append(data.Peers, indexPeer{Name: p.Name, URL: "/~" + p.Name + "/", UsedH: humanSize(p.Bytes)})
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = indexTmpl.Execute(w, data)
+}
+
+// handleAnon serves the unauthenticated, read-only public surface: the shared
+// /public area and each member's public site at /~<name>. Directories render a
+// browse listing; files stream with a content type and a short cache. It is
+// confined to the area root by the same safeJoin guard as SFTP — there is no
+// path to a member's private /me or above the area root.
+func (h *webSrv) handleAnon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	upath := path.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
+	var name, rel, prefix, heading string
+	switch {
+	case upath == "/public" || strings.HasPrefix(upath, "/public/"):
+		name, rel, prefix, heading = "", strings.TrimPrefix(upath, "/public"), "/public", "/public"
+	case strings.HasPrefix(upath, "/~"):
+		seg := strings.SplitN(strings.TrimPrefix(upath, "/~"), "/", 2)
+		name = seg[0]
+		if name == "" {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		if len(seg) == 2 {
+			rel = "/" + seg[1]
+		}
+		prefix, heading = "/~"+name, "~"+name
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	root, ok, err := h.svc.AnonRoot(name)
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	real, err := h.svc.SafeJoin(root, strings.TrimPrefix(rel, "/"))
+	if err != nil {
+		http.NotFound(w, r) // escaped the area root
+		return
+	}
+	fi, err := os.Stat(real)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if fi.IsDir() {
+		h.renderAnonDir(w, prefix, heading, rel, real)
+		return
+	}
+	f, err := os.Open(real)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+}
+
+// renderAnonDir renders a read-only listing of a public directory. prefix is the
+// area URL base ("/public" or "/~name"); rel is the path within it; real is the
+// on-disk directory (already confined by handleAnon).
+func (h *webSrv) renderAnonDir(w http.ResponseWriter, prefix, heading, rel, real string) {
+	des, err := os.ReadDir(real)
+	if err != nil {
+		http.Error(w, "cannot list files", http.StatusInternalServerError)
+		return
+	}
+	rel = path.Clean("/" + strings.TrimPrefix(rel, "/"))
+	data := anonData{Title: h.cfg.Title, CurPath: heading}
+	if rel != "/" {
+		data.CurPath = heading + rel
+		parent := path.Dir(rel)
+		up := prefix
+		if parent != "/" {
+			up = prefix + parent
+		}
+		data.UpURL, data.UpOK = up+"/", true
+	}
+	for _, de := range des {
+		fi, err := de.Info()
+		if err != nil {
+			continue
+		}
+		url := prefix + path.Join(rel, de.Name())
+		if de.IsDir() {
+			url += "/"
+		}
+		data.Entries = append(data.Entries, anonEntry{
+			Name: de.Name(), IsDir: de.IsDir(), SizeH: humanSize(fi.Size()),
+			URL: url, Mod: fi.ModTime().Format("2006-01-02 15:04"),
+		})
+	}
+	sortEntries(data.Entries)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = anonTmpl.Execute(w, data)
+}
+
+// sortEntries orders a listing directories-first, then by name.
+func sortEntries(es []anonEntry) {
+	sort.Slice(es, func(i, j int) bool {
+		if es[i].IsDir != es[j].IsDir {
+			return es[i].IsDir
+		}
+		return es[i].Name < es[j].Name
+	})
+}
+
 // --- view models + templates ------------------------------------------------
 
 type loginData struct {
@@ -416,7 +553,63 @@ var listTmpl = template.Must(template.New("list").Parse(`<!doctype html><html><h
 </tr>{{end}}
 {{if not .Entries}}<tr><td colspan=4 class=muted>(empty)</td></tr>{{end}}
 </table>
-<p class=muted style="margin-top:20px">Also reachable over SFTP: <code>sftp files@files.profullstack.com</code> (with your SSH key).</p>
+<p class=muted style="margin-top:20px">Your <code>/site</code> files are public at <a href="/~{{.User}}/">~{{.User}}</a>. Also reachable over SFTP with your SSH key: <code>sftp files@{{.Title}}</code>.</p>
+</div></body></html>`))
+
+type indexPeer struct {
+	Name  string
+	URL   string
+	UsedH string
+}
+
+type indexData struct {
+	Title string
+	Peers []indexPeer
+	Err   string
+}
+
+type anonEntry struct {
+	Name  string
+	IsDir bool
+	SizeH string
+	URL   string
+	Mod   string
+}
+
+type anonData struct {
+	Title   string
+	CurPath string
+	UpURL   string
+	UpOK    bool
+	Entries []anonEntry
+}
+
+var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>{{.Title}}</title><style>` + baseCSS + `</style></head>
+<body><div class=wrap>
+<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/public/">/public</a> · <a href="/login">Sign in</a></div></div>
+{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+<p class=muted>Public member sites. Each links to that member's shared <code>/site</code> files. <a href="/login">Sign in</a> to manage your own files (private <code>/me</code> + your <code>/site</code>).</p>
+<table><tr><th>Member</th><th class=right>Size</th></tr>
+{{range .Peers}}<tr><td>📂 <a href="{{.URL}}">~{{.Name}}</a></td><td class=right>{{.UsedH}}</td></tr>{{end}}
+{{if not .Peers}}<tr><td colspan=2 class=muted>No public sites yet — sign in and add files to <code>/site</code>.</td></tr>{{end}}
+</table>
+<p class=muted style="margin-top:20px">Publish over SFTP: <code>scp file files@{{.Title}}:/site/</code> → appears at <code>~yourname</code>.</p>
+</div></body></html>`))
+
+var anonTmpl = template.Must(template.New("anon").Parse(`<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>{{.CurPath}} · {{.Title}}</title><style>` + baseCSS + `</style></head>
+<body><div class=wrap>
+<div class=bar><h1>{{.Title}}</h1><div class=muted><a href="/">all sites</a> · <a href="/login">Sign in</a></div></div>
+<div class=crumbs><b>{{.CurPath}}</b></div>
+<p class=muted>Read-only public area.</p>
+<table><tr><th>Name</th><th class=right>Size</th><th>Modified</th></tr>
+{{if .UpOK}}<tr><td><a href="{{.UpURL}}">⬑ ..</a></td><td></td><td></td></tr>{{end}}
+{{range .Entries}}<tr>
+<td>{{if .IsDir}}📁 <a href="{{.URL}}">{{.Name}}/</a>{{else}}📄 <a href="{{.URL}}">{{.Name}}</a>{{end}}</td>
+<td class=right>{{if not .IsDir}}{{.SizeH}}{{end}}</td><td class=muted>{{.Mod}}</td></tr>{{end}}
+{{if not .Entries}}<tr><td colspan=3 class=muted>(empty)</td></tr>{{end}}
+</table>
 </div></body></html>`))
 
 // --- path helpers -----------------------------------------------------------
