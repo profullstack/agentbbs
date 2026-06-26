@@ -31,26 +31,30 @@ gated on membership, *not* on the paid Founding Lifetime plan:
 - Operators can revoke an individual account's SFTP access (abuse response)
   without touching its BBS login — see the management TUI below.
 
-## Two areas
+## Three areas
 
-When you connect you see a virtual root with two directories:
+When you connect you see a virtual root with three directories:
 
 | Path | What it is | Access |
 |---|---|---|
 | `/me` | Your **private** per-user workspace | read/write, quota-limited |
+| `/site` | Your **own public area**, served on the web at `~<name>` | read/write (yours), world-read anonymously |
 | `/public` | The single **shared public file area** (old-school BBS file area) | world-read; members-only write by default |
 
-There is **no** path from one member's `/me` to another's — the only sharing
-surface is the one public area (PRD §9.3, amended). Both areas are confined: a
-path that tries to escape its root (`../`, an absolute path, or a planted
-symlink) is rejected.
+`/me` is private — there is **no** path from one member's `/me` to another's. The
+two *public* surfaces are `/site` (per-member, the only thing exposed at
+`~<name>`) and the single shared `/public`. All three areas are confined: a path
+that tries to escape its root (`../`, an absolute path, or a planted symlink) is
+rejected, and the unauthenticated web surface (below) has no route into anyone's
+`/me`.
 
 ## Quotas
 
-Each private workspace has a byte quota (default **1 GiB**, set by
-`AGENTBBS_FILES_QUOTA_MB`). Writes that would exceed it fail. Operators can set a
-per-user override in the management TUI. The public area is operator-managed and
-not metered per user.
+Each member's **owned storage** has a byte quota (default **1 GiB**, set by
+`AGENTBBS_FILES_QUOTA_MB`). The gauge sums your private `/me` **and** your public
+`/site`; writes to either that would exceed the quota fail. Operators can set a
+per-user override in the management TUI. The shared `/public` area is
+operator-managed and **not** metered per user.
 
 ## In-BBS browser
 
@@ -86,7 +90,58 @@ content-blind.
 |---|---|---|
 | `AGENTBBS_FILES` | `1` | enable the SFTP subsystem + Files plugin (`0` disables) |
 | `AGENTBBS_FILES_QUOTA_MB` | `1024` | default per-user workspace quota (MB) |
-| `AGENTBBS_DATA` | `./data` | storage lives under `<data>/files/{users,public}` |
+| `AGENTBBS_DATA` | `./data` | storage lives under `<data>/files/{users,sites,public}` |
+
+## Provisioning members from a public key (for external services)
+
+Normally members onboard interactively (`ssh join@`). External services that
+want to grant a user file storage without that flow — e.g. the TronBrowser
+extension store letting a publisher upload bundles — can register an account
+directly from an SSH **public** key (an account is just *handle + key
+fingerprint*):
+
+```bash
+agentbbs provision-user --name acme --pubkey "ssh-ed25519 AAAA… acme@dev"
+# or:  --pubkey-file ./id_ed25519.pub
+```
+
+It normalizes the handle with the same rules as `join@` (`SanitizeUsername`),
+fingerprints the key, and `EnsureUser`s the member; Files/SFTP access is then
+available immediately (free for all members). Output is JSON (`{ok, name,
+fingerprint, store_id}`); it refuses if the key already belongs to another
+member or the handle is taken by a different key. The publisher can then:
+
+```bash
+scp dist.crx files@files.profullstack.com:/public/extensions/acme/
+```
+
+## The web file host (`files.<host>`)
+
+The whole site is served by the Go file manager (`internal/files/web.go`), which
+Caddy reverse-proxies. **Login is optional** — it gates only your private `/me`
+and writes. The public surface is anonymous, read-only, and area-confined; it
+has no route into anyone's `/me`.
+
+| URL | Serves | Auth |
+|---|---|---|
+| `/` | A **directory of members' `~user` sites**, plus a sign-in link | none |
+| `/~<name>[/path]` | That member's public `/site` — browse + download | none |
+| `/public[/path]` | The shared public area — browse + download | none |
+| `/?path=…`, `/upload`, … | The authenticated manager: your `/me`, `/site`, `/public` | webmail login |
+
+Clean URLs map **1:1 to the SFTP paths**, so share links just work:
+
+```
+scp dist.crx files@files.profullstack.com:/public/extensions/acme/
+        ->  https://files.profullstack.com/public/extensions/acme/dist.crx
+
+scp index.html files@files.profullstack.com:/site/
+        ->  https://files.profullstack.com/~chovy/index.html
+```
+
+Directories render a read-only browse listing; files stream with a content type
+and a short (`max-age=300`) cache. Sign in (top-right link, webmail password) to
+manage your own files.
 
 ## Provisioning members from a public key (for external services)
 
