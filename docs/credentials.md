@@ -45,17 +45,32 @@ password across every service that has its own credential**:
 |---|---|---|
 | **git** (Forgejo) | admin API — ensure the account, then `SetPassword` (clears `must_change_password`) | git **push** uses the SSH key, not this password; this is for the web UI |
 | **mail** (Mailu webmail) | admin API — ensure the mailbox, then `mailu.SetPassword` | the mailbox/IMAP/webmail login |
-| **chat** (IRC + The Lounge) | the privileged helper `set-irc-password.sh` via a narrow `sudo` rule | SASL password for native IRC clients **and** the web client; see [`irc.md`](irc.md) |
+| **chat** (IRC + The Lounge) | the privileged helper `set-irc-password.sh` via a narrow `sudo` rule | sets all THREE chat credentials to the new password (see below); see [`irc.md`](irc.md) |
 
 BBS/SSH login itself is unaffected — that's always the member's key.
 
+**Chat has three credentials, all set to the new password.** "Chat" spans Ergo
+(the IRC server) and The Lounge (the web client at `chat.<domain>`), which between
+them keep *three* secrets — `set-irc-password.sh` sets all three so one password
+works everywhere:
+
+1. **Ergo SASL** — the pbkdf2 hash in `/var/lib/ergo/irc-passwd` that native IRC
+   clients (irssi/HexChat) authenticate with.
+2. **The Lounge `saslPassword`** — how the *web* client logs in to Ergo on the
+   member's behalf (in the user's JSON `networks[]`).
+3. **The Lounge web-login password** — the bcrypt field used to sign in to
+   `chat.<domain>` *itself*, set via `thelounge reset <member>`
+   (`AGENTBBS_LOUNGE_RESET_CMD`). Missing this was the "I reset my password but
+   chat.profullstack.com says auth failed" bug: a member could reach IRC but not
+   the web client.
+
 **Why chat needs a helper.** The BBS process runs as the unprivileged `agentbbs`
-service user, but the Ergo password store (`/var/lib/ergo/irc-passwd`, `ergo:ergo
-0600`) and The Lounge user files are root-owned. `setup.sh` installs
-`scripts/set-irc-password.sh` to `/usr/local/sbin/agentbbs-set-irc-password` and a
-`/etc/sudoers.d/agentbbs-ircpass` rule letting **only** that one command run as
-root. The new password travels on **stdin** (the `set-irc-password.sh <member> -`
-form), so it never appears in the process table or sudo's command log. Each leg is
+service user, but the Ergo password store (`ergo:ergo 0600`) and The Lounge user
+files are root-owned. `setup.sh` installs `scripts/set-irc-password.sh` to
+`/usr/local/sbin/agentbbs-set-irc-password` and a `/etc/sudoers.d/agentbbs-ircpass`
+rule letting **only** that one command run as root. The new password travels on
+**stdin** (the `set-irc-password.sh <member> -` form, and likewise piped to
+`thelounge reset`), so it never appears in the process table or sudo's command log. Each leg is
 independent: if one service is unconfigured or fails, the others still apply and
 the member sees a per-service ✓/✗ summary. A confirmation email (which never
 contains the password) is sent on success.
