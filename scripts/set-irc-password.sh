@@ -3,8 +3,13 @@
 #
 # Writes a pbkdf2-sha256 hash to the Ergo password store
 # (/var/lib/ergo/irc-passwd, ergo:ergo 0600) that ergo-auth-member verifies on
-# SASL login, and (if a The Lounge user file exists for the member) updates that
-# user's saslPassword so the web client keeps working without member action.
+# SASL login. When a The Lounge user file exists for the member it ALSO sets two
+# distinct Lounge credentials to the same password:
+#   - the IRC network saslPassword (so the web client authenticates to Ergo), and
+#   - the Lounge WEB LOGIN password (the bcrypt field used to sign in to
+#     chat.<domain> itself), via `thelounge reset` (AGENTBBS_LOUNGE_RESET_CMD).
+# Without the web-login sync a member who reset via passwd@ could connect to IRC
+# but not log into the web client — the bug this guards against.
 #
 # Usage:
 #   set-irc-password.sh <member> [password]      # password generated if omitted
@@ -16,10 +21,19 @@
 #
 # Run as root on the BBS box. The member must already be a BBS member; this only
 # sets the secret — membership itself is still gated by /irc-auth.
-import sys, os, json, glob, secrets, hashlib, pwd, grp
+import sys, os, json, glob, secrets, hashlib, pwd, grp, subprocess
 
 PASSWD_FILE = os.environ.get("ERGO_IRC_PASSWD", "/var/lib/ergo/irc-passwd")
 LOUNGE_USERS = os.environ.get("AGENTBBS_LOUNGE_USERS", "/var/lib/thelounge/users")
+# Command that resets a member's The Lounge *web login* password — distinct from
+# the IRC saslPassword. We feed the new password to it on STDIN (so it never
+# lands on a command line) and append the member name. Default targets the
+# dockerized The Lounge (`thelounge reset <member>` reads the password from
+# stdin). Set AGENTBBS_LOUNGE_RESET_CMD="" to skip the web-login sync (e.g. when
+# The Lounge isn't deployed), or override it for a native/other install.
+LOUNGE_RESET_CMD = os.environ.get(
+    "AGENTBBS_LOUNGE_RESET_CMD", "docker exec -i thelounge thelounge reset"
+)
 ITERS = 200_000
 
 
@@ -55,10 +69,40 @@ def write_store(store):
     os.replace(tmp, PASSWD_FILE)
 
 
+def set_lounge_web_password(member, pw):
+    """Set The Lounge WEB LOGIN password (its own bcrypt field), distinct from the
+    IRC saslPassword. Pipes the new password to `thelounge reset <member>` on
+    stdin so it never appears on a command line. Best-effort: warns but never
+    fails the run (the Ergo SASL credential is the primary IRC secret)."""
+    cmd = LOUNGE_RESET_CMD.strip()
+    if not cmd:
+        return
+    try:
+        r = subprocess.run(
+            cmd.split() + [member],
+            input=(pw + "\n").encode(),
+            capture_output=True,
+            timeout=30,
+        )
+        if r.returncode != 0:
+            print(
+                f"WARN: Lounge web-login reset for {member} failed (rc={r.returncode}): "
+                f"{r.stderr.decode(errors='replace').strip()[:200]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  (updated The Lounge web-login password for {member})")
+    except Exception as e:
+        print(f"WARN: Lounge web-login reset for {member}: {e}", file=sys.stderr)
+
+
 def sync_lounge(member, pw):
     p = os.path.join(LOUNGE_USERS, member + ".json")
     if not os.path.exists(p):
         return
+    # Web login password first (rewrites the user file via the Lounge CLI), then
+    # the saslPassword edit below reads that fresh file and preserves it.
+    set_lounge_web_password(member, pw)
     try:
         d = json.load(open(p))
     except Exception as e:

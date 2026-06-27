@@ -74,7 +74,9 @@ func (c Config) SetPassword(member, password string) error {
 		args = []string{"-n", c.Script, member, "-"}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Generous: the helper also resets The Lounge web-login password via a
+	// `docker exec thelounge ...` which can take a few seconds on a busy box.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	// Never let the helper inherit the BBS environment wholesale; pass only the
