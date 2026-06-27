@@ -23,13 +23,15 @@ import (
 
 type Plugin struct{}
 
-func (Plugin) ID() string          { return "members" }
-func (Plugin) Title() string       { return "Members" }
-func (Plugin) Description() string { return "Who's here · finger a profile · leave a message · inbox" }
-func (Plugin) RequiresAuth() bool  { return true }
+func (Plugin) ID() string    { return "members" }
+func (Plugin) Title() string { return "Members" }
+func (Plugin) Description() string {
+	return "Who's here · finger a profile · leave a message · inbox"
+}
+func (Plugin) RequiresAuth() bool { return true }
 
 func (Plugin) New(user auth.User, ctx plugin.Context) tea.Model {
-	return &model{user: user, ctx: ctx, state: stList}
+	return &model{user: user, ctx: ctx, state: stList, marked: map[string]bool{}}
 }
 
 // state is which sub-screen is showing.
@@ -58,8 +60,9 @@ type model struct {
 
 	people []person
 	inbox  []store.Message
-	cursor int // list/inbox cursor
-	target string // who we're fingering/composing to
+	cursor int             // list/inbox cursor
+	target string          // who we're fingering/composing to (single)
+	marked map[string]bool // group selection (member name → selected)
 
 	draft string // compose buffer
 	note  string // transient status line
@@ -137,12 +140,54 @@ func (m *model) loadInbox() tea.Cmd {
 	}
 }
 
-type sentMsg struct{ err error }
+type sentMsg struct {
+	n   int
+	err error
+}
 
-func (m *model) send(to, body string) tea.Cmd {
+// send delivers body to the current compose recipients (the group selection if
+// any, else the single m.target) in one shot.
+func (m *model) send(body string) tea.Cmd {
 	st := m.ctx.Store
 	from := m.user.Name
-	return func() tea.Msg { return sentMsg{err: st.SendMessage(from, to, body)} }
+	to := m.recipients()
+	return func() tea.Msg {
+		n, err := st.SendMessageMulti(from, to, body)
+		return sentMsg{n: n, err: err}
+	}
+}
+
+// recipients is who a compose will be sent to: the group selection (sorted, the
+// directory order) when one exists, otherwise just m.target.
+func (m *model) recipients() []string {
+	if len(m.marked) == 0 {
+		if m.target == "" {
+			return nil
+		}
+		return []string{m.target}
+	}
+	var out []string
+	for _, p := range m.people {
+		if m.marked[p.name] {
+			out = append(out, p.name)
+		}
+	}
+	return out
+}
+
+// recipientLabel summarizes the compose audience for the header.
+func (m *model) recipientLabel() string {
+	r := m.recipients()
+	switch len(r) {
+	case 0:
+		return "(nobody)"
+	case 1:
+		return r[0]
+	case 2, 3:
+		return strings.Join(r, ", ")
+	default:
+		return fmt.Sprintf("%d members", len(r))
+	}
 }
 
 func (m *model) Init() tea.Cmd { return m.load() }
@@ -167,8 +212,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.note = "send failed: " + msg.err.Error()
 		} else {
-			m.note = "✓ message sent to " + m.target
-			m.state = stProfile
+			if msg.n == 1 {
+				m.note = "✓ message sent to " + m.target
+			} else {
+				m.note = fmt.Sprintf("✓ message sent to %d members", msg.n)
+			}
+			m.marked = map[string]bool{} // clear the group after sending
+			m.state = stList
 		}
 		m.draft = ""
 		return m, nil
@@ -202,13 +252,37 @@ func (m *model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadInbox()
 		case "r":
 			return m, m.load()
+		case " ":
+			// Toggle the member under the cursor in/out of the group selection.
+			if p := m.selected(); p != nil {
+				if m.marked[p.name] {
+					delete(m.marked, p.name)
+				} else {
+					m.marked[p.name] = true
+				}
+			}
+		case "a":
+			// Select all, or clear if everyone is already selected.
+			if len(m.marked) == len(m.people) {
+				m.marked = map[string]bool{}
+			} else {
+				m.marked = make(map[string]bool, len(m.people))
+				for _, p := range m.people {
+					m.marked[p.name] = true
+				}
+			}
 		case "enter":
 			if p := m.selected(); p != nil {
 				m.target = p.name
 				m.state = stProfile
 			}
 		case "m":
-			if p := m.selected(); p != nil {
+			// With a group selected, compose to all of them; otherwise to the
+			// member under the cursor.
+			if len(m.marked) > 0 {
+				m.draft = ""
+				m.state = stCompose
+			} else if p := m.selected(); p != nil {
 				m.target = p.name
 				m.draft = ""
 				m.state = stCompose
@@ -244,7 +318,12 @@ func (m *model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) composeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyEsc:
-		m.state = stProfile
+		// Group compose has no single profile to return to.
+		if len(m.marked) > 0 {
+			m.state = stList
+		} else {
+			m.state = stProfile
+		}
 		m.draft = ""
 		return m, nil
 	case tea.KeyEnter:
@@ -253,7 +332,7 @@ func (m *model) composeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.note = "type a message first (esc to cancel)"
 			return m, nil
 		}
-		return m, m.send(m.target, body)
+		return m, m.send(body)
 	case tea.KeyBackspace, tea.KeyDelete:
 		if n := len(m.draft); n > 0 {
 			r := []rune(m.draft)
@@ -321,6 +400,10 @@ func (m *model) listView() string {
 		if p.online {
 			dot = on.Render("●")
 		}
+		box := dim.Render("[ ]")
+		if m.marked[p.name] {
+			box = on.Render("[x]")
+		}
 		name := p.name
 		c := "  "
 		if i == m.cursor {
@@ -331,10 +414,14 @@ func (m *model) listView() string {
 		if !p.online {
 			seen = "last " + relTime(p.lastSeen, p.seenOK)
 		}
-		row := fmt.Sprintf("%s%s %-20s %-8s %s", c, dot, name, p.kind, dim.Render(seen))
+		row := fmt.Sprintf("%s%s %s %-20s %-8s %s", c, box, dot, name, p.kind, dim.Render(seen))
 		s += row + "\n"
 	}
-	s += "\n" + dim.Render("↑/↓ move · enter finger · m message · i inbox · r refresh · q back")
+	if n := len(m.marked); n > 0 {
+		s += "\n" + on.Render(fmt.Sprintf("%d selected", n)) +
+			dim.Render(" — m to message the group")
+	}
+	s += "\n" + dim.Render("↑/↓ move · space select · a all · m message · enter finger · i inbox · q back")
 	return s
 }
 
@@ -363,8 +450,9 @@ func (m *model) profileView() string {
 }
 
 func (m *model) composeView() string {
-	s := hdr.Render("message "+m.target) + "\n\n"
-	s += dim.Render("from "+m.user.Name+" → "+m.target) + "\n\n"
+	to := m.recipientLabel()
+	s := hdr.Render("message "+to) + "\n\n"
+	s += dim.Render("from "+m.user.Name+" → "+to) + "\n\n"
 	s += "  " + m.draft + cur.Render("▏") + "\n\n"
 	s += dim.Render("enter send · esc cancel")
 	return s

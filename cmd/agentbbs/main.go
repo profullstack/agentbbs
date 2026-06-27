@@ -28,6 +28,8 @@
 //	agentbbs qrypt-issuer-keygen         print a fresh qrypt issuer seed + public key
 //	agentbbs notify-creds [flags]        (re)email verified members their git +
 //	                                     mailbox creds/links (preview unless --send)
+//	agentbbs broadcast [flags] <text>    announce to ALL members via inbox + email
+//	                                     (preview unless --send; see broadcast.go)
 package main
 
 import (
@@ -164,6 +166,10 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "notify-creds" {
 		notifyCreds(st, os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "broadcast" {
+		broadcastCmd(st, os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "provision-user" {
@@ -1719,10 +1725,17 @@ func (a *app) handleChat(s ssh.Session) {
 	}
 }
 
-// handleMsg is the member-to-member messaging route: `ssh msg@host <user> [text]`
-// leaves a note in <user>'s BBS inbox. The body is the remaining args, or stdin
-// when none are given (so `echo hi | ssh msg@host bob` works). Members only;
-// the recipient reads it in the hub's Members ▸ inbox.
+// handleMsg is the member-to-member messaging route. It leaves a note in one or
+// more members' BBS inboxes:
+//
+//	ssh msg@host bob hi              one member
+//	ssh msg@host alice,bob,carol hi  a group (comma-separated, no spaces)
+//	ssh msg@host all hi              broadcast to every member (also: *, everyone)
+//
+// The body is the remaining args, or stdin when none are given (so
+// `echo hi | ssh msg@host all` works). Members only; recipients read it in the
+// hub's Members ▸ inbox. This is the BBS-inbox channel — to also reach members by
+// email, the operator uses `agentbbs broadcast`.
 func (a *app) handleMsg(s ssh.Session) {
 	fp := auth.Fingerprint(s.PublicKey())
 	if fp == "" {
@@ -1738,22 +1751,29 @@ func (a *app) handleMsg(s ssh.Session) {
 	}
 	args := s.Command()
 	if len(args) == 0 {
-		wish.Println(s, "usage: ssh msg@"+a.host+" <user> [message]   (or pipe the message on stdin)")
+		wish.Println(s, "usage: ssh msg@"+a.host+" <user[,user2,…]|all> [message]   (or pipe the message on stdin)")
 		_ = s.Exit(1)
 		return
 	}
-	to := strings.ToLower(args[0])
-	recipient, ok, err := a.st.UserByName(to)
-	if err != nil || !ok {
-		wish.Println(s, "no member named "+to+" — check the spelling (ssh "+to+"@"+a.host+" to finger).")
+
+	recipients, unknown, err := a.resolveRecipients(args[0], from.Name)
+	if err != nil {
+		wish.Println(s, "could not look up members: "+err.Error())
 		_ = s.Exit(1)
 		return
 	}
-	if recipient.Name == from.Name {
-		wish.Println(s, "you can't message yourself.")
+	if len(unknown) > 0 {
+		wish.Println(s, "no member named "+strings.Join(unknown, ", ")+
+			" — check the spelling (ssh <name>@"+a.host+" to finger).")
 		_ = s.Exit(1)
 		return
 	}
+	if len(recipients) == 0 {
+		wish.Println(s, "no recipients (you can't message only yourself).")
+		_ = s.Exit(1)
+		return
+	}
+
 	body := strings.TrimSpace(strings.Join(args[1:], " "))
 	if body == "" {
 		// No inline text — read the message from stdin (piped, or typed then ^D).
@@ -1765,14 +1785,63 @@ func (a *app) handleMsg(s ssh.Session) {
 		_ = s.Exit(1)
 		return
 	}
-	if err := a.st.SendMessage(from.Name, recipient.Name, body); err != nil {
+
+	sent, err := a.st.SendMessageMulti(from.Name, recipients, body)
+	if err != nil {
 		wish.Println(s, "could not send: "+err.Error())
 		_ = s.Exit(1)
 		return
 	}
 	_, _ = a.st.RecordSession(from.ID, s.User(), remoteIP(s), "msg")
-	wish.Println(s, "✓ message left for "+recipient.Name+" — they'll see it in Members ▸ inbox.")
+	if sent == 1 {
+		wish.Println(s, "✓ message left for "+recipients[0]+" — they'll see it in Members ▸ inbox.")
+	} else {
+		wish.Println(s, fmt.Sprintf("✓ message left for %d members — they'll see it in Members ▸ inbox.", sent))
+	}
 	_ = s.Exit(0)
+}
+
+// allRecipientTokens are the case-insensitive specs that mean "every member".
+var allRecipientTokens = map[string]bool{"all": true, "*": true, "everyone": true, "@all": true}
+
+// resolveRecipients turns a msg@ recipient spec into a validated, de-duplicated
+// list of member names, excluding the sender. The spec is either one of
+// allRecipientTokens (→ every other member) or a comma-separated list of names.
+// unknown holds any listed names that aren't members (so the caller can report
+// them); a non-nil error means the directory lookup itself failed.
+func (a *app) resolveRecipients(spec, sender string) (recipients, unknown []string, err error) {
+	if allRecipientTokens[strings.ToLower(strings.TrimSpace(spec))] {
+		users, err := a.st.ListUsers(100000)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, u := range users {
+			if u.Banned || strings.EqualFold(u.Name, sender) {
+				continue
+			}
+			recipients = append(recipients, u.Name)
+		}
+		return recipients, nil, nil
+	}
+
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(spec, ",") {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" || seen[name] || strings.EqualFold(name, sender) {
+			continue
+		}
+		seen[name] = true
+		u, ok, err := a.st.UserByName(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			unknown = append(unknown, name)
+			continue
+		}
+		recipients = append(recipients, u.Name)
+	}
+	return recipients, unknown, nil
 }
 
 // handlePasswd is the self-service "reset my password everywhere" route. It is
