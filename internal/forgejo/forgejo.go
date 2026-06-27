@@ -142,6 +142,38 @@ func (c Config) EnsureUserReset(username, email string) (created bool, password 
 	return false, pw, nil
 }
 
+// SetPassword sets an existing account's password to the member-chosen value and
+// clears must_change_password (they picked it, so don't force another change on
+// next sign-in). Unlike EnsureUserReset it never generates a password and never
+// creates the account: the caller is a member resetting their own credential
+// across services, and the Forgejo account is expected to already exist (it is
+// created at email-verification time). A missing account is reported as an error
+// so the caller can surface "no git account yet" rather than silently succeeding.
+func (c Config) SetPassword(username, password string) error {
+	if !c.Configured() {
+		return fmt.Errorf("forgejo not configured")
+	}
+	exists, err := c.userExists(username)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("forgejo user %q does not exist", username)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"password":             password,
+		"must_change_password": false,
+	})
+	status, resp, err := c.do(http.MethodPatch, "/admin/users/"+username, body)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("forgejo set password %q: %d: %s", username, status, truncate(resp, 200))
+	}
+	return nil
+}
+
 // EnsureKey registers an SSH public key on the member's Forgejo account so the
 // key they use for the BBS is also their git push key ("BBS membership is the
 // git account"). It is idempotent: added is false when the same key material is

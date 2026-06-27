@@ -965,8 +965,28 @@ UNIT
   sleep 1
   systemctl is-active --quiet ergo \
     || warn "ergo failed to start — check: journalctl -u ergo -n50"
+
+  # ---- chat password bridge for the BBS passwd@ flow ----------------------
+  # The Ergo password store + The Lounge user files are root-owned, but the BBS
+  # runs as ${SVC_USER}. Install set-irc-password.sh to a stable path and grant
+  # ${SVC_USER} a narrow NOPASSWD sudo rule for exactly that command, so a member
+  # running `ssh passwd@` can set their chat password alongside git + mail. The
+  # password travels on stdin (the "-" form), so it never appears in sudo's log.
+  install -m 0755 -o root -g root \
+    "${SRC_DIR}/scripts/set-irc-password.sh" /usr/local/sbin/agentbbs-set-irc-password
+  cat > /etc/sudoers.d/agentbbs-ircpass <<SUDO
+${SVC_USER} ALL=(root) NOPASSWD: /usr/local/sbin/agentbbs-set-irc-password
+SUDO
+  chmod 0440 /etc/sudoers.d/agentbbs-ircpass
+  if visudo -cf /etc/sudoers.d/agentbbs-ircpass >/dev/null 2>&1; then
+    upsert_env AGENTBBS_SET_IRC_PASSWD /usr/local/sbin/agentbbs-set-irc-password
+  else
+    warn "sudoers rule for the chat password bridge is invalid — removing it (passwd@ will skip chat)"
+    rm -f /etc/sudoers.d/agentbbs-ircpass
+  fi
 else
   systemctl disable --now ergo ergo-certs.timer ergo-motd.timer >/dev/null 2>&1 || true
+  rm -f /etc/sudoers.d/agentbbs-ircpass /usr/local/sbin/agentbbs-set-irc-password
 fi
 
 # ---- 9c. News (Usenet/NNTP) server (co-located news.${DOMAIN}) --------------

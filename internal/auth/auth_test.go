@@ -15,6 +15,25 @@ func TestIsAdminName(t *testing.T) {
 	}
 }
 
+func TestIsPasswdName(t *testing.T) {
+	for _, name := range []string{"passwd", "PASSWD", "password", "Password"} {
+		if !IsPasswdName(name) {
+			t.Errorf("IsPasswdName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"pass", "pw", "anthony", ""} {
+		if IsPasswdName(name) {
+			t.Errorf("IsPasswdName(%q) = true, want false", name)
+		}
+	}
+	// The route names must not be claimable as account names.
+	for _, name := range []string{"passwd", "password"} {
+		if _, ok := SanitizeUsername(name); ok {
+			t.Errorf("SanitizeUsername(%q) should be reserved", name)
+		}
+	}
+}
+
 func TestAdminsAllowlist(t *testing.T) {
 	t.Setenv("AGENTBBS_ADMINS", "anthony, Root  ops")
 	admins := Admins()

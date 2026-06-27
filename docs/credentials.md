@@ -26,6 +26,40 @@ verification, and it's a no-op when Forgejo is unconfigured. It runs on email
 verification (`join@` and the web `/verify` link) and again, asynchronously, on
 each BBS login so an existing member's key is kept in sync.
 
+## `passwd@` — self-service "reset my password everywhere"
+
+A member who forgot their password (or just wants to rotate it) runs:
+
+```bash
+ssh passwd@bbs.profullstack.com         # interactive: type a new password twice
+ssh passwd@bbs.profullstack.com < pw    # non-interactive: read it from stdin
+echo | ssh passwd@bbs.profullstack.com  # empty/no PTY: a strong one is generated for you
+```
+
+The route is **gated by the caller's registered SSH key**, so it doubles as the
+forgot-password path — no old password is required (the key *is* the proof of
+identity). `password@` is an alias. Whatever the member enters is applied as **one
+password across every service that has its own credential**:
+
+| Service | How it's set | Notes |
+|---|---|---|
+| **git** (Forgejo) | admin API — ensure the account, then `SetPassword` (clears `must_change_password`) | git **push** uses the SSH key, not this password; this is for the web UI |
+| **mail** (Mailu webmail) | admin API — ensure the mailbox, then `mailu.SetPassword` | the mailbox/IMAP/webmail login |
+| **chat** (IRC + The Lounge) | the privileged helper `set-irc-password.sh` via a narrow `sudo` rule | SASL password for native IRC clients **and** the web client; see [`irc.md`](irc.md) |
+
+BBS/SSH login itself is unaffected — that's always the member's key.
+
+**Why chat needs a helper.** The BBS process runs as the unprivileged `agentbbs`
+service user, but the Ergo password store (`/var/lib/ergo/irc-passwd`, `ergo:ergo
+0600`) and The Lounge user files are root-owned. `setup.sh` installs
+`scripts/set-irc-password.sh` to `/usr/local/sbin/agentbbs-set-irc-password` and a
+`/etc/sudoers.d/agentbbs-ircpass` rule letting **only** that one command run as
+root. The new password travels on **stdin** (the `set-irc-password.sh <member> -`
+form), so it never appears in the process table or sudo's command log. Each leg is
+independent: if one service is unconfigured or fails, the others still apply and
+the member sees a per-service ✓/✗ summary. A confirmation email (which never
+contains the password) is sent on success.
+
 ## `notify-creds` — backfill / re-send (ops)
 
 The git- and mailbox-credential emails were added after some accounts already
@@ -77,6 +111,8 @@ on any failure.
 | `AGENTBBS_FORWARDEMAIL_API_KEY` | unset | mail — forwardemail.net API key |
 | `AGENTBBS_FORWARDEMAIL_DOMAIN` | `AGENTBBS_MAIL_DOMAIN` | mail — alias domain (falls back to the mail domain, default `mail.profullstack.com`) |
 | `AGENTBBS_WEBMAIL_URL` | unset | mail — webmail link put in the email (optional) |
+| `AGENTBBS_SET_IRC_PASSWD` | unset (set by `setup.sh` when IRC is on) | chat — path to the privileged `set-irc-password.sh` helper for `passwd@`; empty disables the chat leg |
+| `AGENTBBS_SET_IRC_SUDO` | `1` | chat — invoke the helper via `sudo` (set `0` if the BBS already runs as root, e.g. in tests) |
 | `AGENTBBS_SMTP_HOST` / `_FROM` | unset | **sending** all of the above emails (required to actually send) |
 | `AGENTBBS_SMTP_PORT` / `_USER` / `_PASS` | `587` / unset / unset | SMTP submission (STARTTLS) |
 

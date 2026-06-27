@@ -8,7 +8,11 @@
 #
 # Usage:
 #   set-irc-password.sh <member> [password]      # password generated if omitted
+#   set-irc-password.sh <member> -               # read the password from stdin
 #   set-irc-password.sh --all                    # provision any member missing one
+#
+# The "-" form is how the (non-root) BBS passwd@ flow calls this under sudo: the
+# password arrives on stdin so it never lands in the process table or sudo's log.
 #
 # Run as root on the BBS box. The member must already be a BBS member; this only
 # sets the secret — membership itself is still gated by /irc-auth.
@@ -98,10 +102,22 @@ def main(argv):
         print(f"provisioned {len(done)} member(s) that were missing a password")
         return 0
     member = argv[0]
-    pw = argv[1] if len(argv) > 1 else secrets.token_urlsafe(9)
+    from_stdin = len(argv) > 1 and argv[1] == "-"
+    if from_stdin:
+        pw = sys.stdin.readline().rstrip("\n")
+        if not pw:
+            print("empty password on stdin", file=sys.stderr)
+            return 2
+    elif len(argv) > 1:
+        pw = argv[1]
+    else:
+        pw = secrets.token_urlsafe(9)
     set_one(member, pw, store)
     write_store(store)
-    print(f"{member}\t{pw}")
+    # When the password came from stdin (BBS passwd@ flow) the caller already
+    # knows it — don't echo it back into their captured output. Otherwise print
+    # it so an operator running this by hand sees the generated/set value.
+    print(member if from_stdin else f"{member}\t{pw}")
     return 0
 
 

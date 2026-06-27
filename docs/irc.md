@@ -69,6 +69,12 @@ one). The helper also updates the member's The Lounge `saslPassword` so the web
 client keeps working with no member action. Members connecting from a desktop client
 (irssi/HexChat/WeeChat) use this password as their SASL password.
 
+Members set their own IRC password (alongside git + mail) self-service via
+`ssh passwd@<host>` — see [`credentials.md`](credentials.md#passwd--self-service-reset-my-password-everywhere).
+That flow calls this same helper as `set-irc-password.sh <member> -` (password on
+stdin) through a narrow `sudo` rule installed by `setup.sh`, since the BBS process
+itself is unprivileged.
+
 > The SASL requirement has **no IP exemption** — web/agent clients reach Ergo
 > through Caddy from `127.0.0.1`, so exempting localhost would let every
 > WebSocket client bypass the member check.
