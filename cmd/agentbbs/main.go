@@ -1937,6 +1937,13 @@ func (a *app) handlePasswd(s ssh.Session) {
 	if len(ok) == 0 && len(failed) == 0 {
 		wish.Println(s, "  (no password-backed services are configured on this server)")
 	}
+	if a.irc.Configured() {
+		// An already-open web/IRC client keeps using the OLD SASL password until
+		// it reconnects, so a change here looks like it "didn't work" mid-session.
+		wish.Println(s, "")
+		wish.Println(s, "  ↻ chat: if you're already connected at chat."+rootDomain(a.host)+
+			", reconnect (/connect) or sign out and back in to pick up the new password.")
+	}
 
 	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "passwd")
 
