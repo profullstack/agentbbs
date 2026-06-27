@@ -113,6 +113,16 @@ func IsMailName(u string) bool { return MailNames[strings.ToLower(u)] }
 // management TUI (operator-gated).
 func IsFilesAdminName(u string) bool { return FilesAdminNames[strings.ToLower(u)] }
 
+// PasswdNames route a member into the self-service password reset: a key-gated
+// flow that sets ONE new password across every downstream service that has its
+// own credential — git (Forgejo), mail (Mailu webmail), and chat (IRC/The Lounge).
+// Because the member is authenticated by their registered SSH key, this doubles
+// as the "forgot password" path: no old password is required.
+var PasswdNames = map[string]bool{"passwd": true, "password": true}
+
+// IsPasswdName reports whether the SSH username requests the password reset flow.
+func IsPasswdName(u string) bool { return PasswdNames[strings.ToLower(u)] }
+
 // MsgNames route a member-to-member message: `ssh msg@host <user>` leaves a
 // note in the recipient's BBS inbox (store-and-forward, see the Members plugin).
 var MsgNames = map[string]bool{"msg": true, "message": true}
@@ -137,7 +147,8 @@ func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
 		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
-		MailNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] || systemReserved[n] {
+		MailNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] ||
+		PasswdNames[n] || systemReserved[n] {
 		return true
 	}
 	return strings.HasPrefix(n, "video-") // video-<code> call routes

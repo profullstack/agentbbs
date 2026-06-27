@@ -10,6 +10,8 @@
 //	ssh domain@host point your own domain at your homepage (Premium; add/rm/list)
 //	ssh <name>@host (from another account) prints a finger card for that member
 //	ssh msg@host U  leave member U a message: `ssh msg@host U hi` or pipe stdin
+//	ssh passwd@host reset ONE password across git + mail + chat (forgot-password;
+//	                key-gated, password@ is an alias). See docs/credentials.md
 //	ssh admin@host  the operator admin console ($AGENTBBS_ADMINS only;
 //	                sysop@/root@ are aliases)
 //	ssh game@host G AgentGames: play game G (e.g. ttt, c4) over NDJSON; rated,
@@ -65,6 +67,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/games"
 	"github.com/profullstack/agentbbs/internal/hub"
+	"github.com/profullstack/agentbbs/internal/ircpass"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/mailbox"
 	"github.com/profullstack/agentbbs/internal/mailu"
@@ -114,6 +117,7 @@ type app struct {
 	mailHost   string            // mail server host (IMAP/SMTP), e.g. mail.profullstack.com
 	webmailURL string            // webmail (Roundcube) URL shown to members
 	forgejo    forgejo.Config    // AgentGit git.profullstack.com account provisioning
+	irc        ircpass.Config    // chat/IRC password reset bridge (privileged helper)
 	live       *liveReg          // in-memory live-session registry (admin console)
 	files      *files.Service    // SFTP file storage (nil when AGENTBBS_FILES=0)
 	gamesReg   *games.Registry   // AgentGames catalog
@@ -190,6 +194,7 @@ func main() {
 		mailHost:   mailHost,
 		webmailURL: env("AGENTBBS_WEBMAIL_URL", "https://"+mailHost),
 		forgejo:    forgejo.ConfigFromEnv(),
+		irc:        ircpass.ConfigFromEnv(),
 		live:       newLiveReg(),
 		dataDir:    dataDir,
 		assets:     env("AGENTBBS_ASSETS", "./assets"),
@@ -384,6 +389,8 @@ func (a *app) router() wish.Middleware {
 				filesAdminHandler(s)
 			case auth.IsMsgName(user):
 				a.handleMsg(s)
+			case auth.IsPasswdName(user):
+				a.handlePasswd(s)
 			case isVideo:
 				a.handleVideo(s, code)
 			case user == "agent":
@@ -626,6 +633,36 @@ func readLine(s ssh.Session, in *bufio.Reader) (string, error) {
 			if c >= 0x20 { // printable byte; ignore other control codes
 				b = append(b, c)
 				wish.Print(s, string(c))
+			}
+		}
+	}
+}
+
+// readSecret reads a line like readLine but echoes '*' for each character instead
+// of the character itself, so a password isn't shown on screen. Same raw-PTY
+// handling (accept '\r' or '\n', handle backspace, abort on Ctrl-C/Ctrl-D).
+func readSecret(s ssh.Session, in *bufio.Reader) (string, error) {
+	var b []byte
+	for {
+		c, err := in.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch c {
+		case '\r', '\n':
+			wish.Print(s, "\r\n")
+			return string(b), nil
+		case 0x03, 0x04: // Ctrl-C / Ctrl-D: treat as abort
+			return "", io.EOF
+		case 0x7f, '\b':
+			if len(b) > 0 {
+				b = b[:len(b)-1]
+				wish.Print(s, "\b \b")
+			}
+		default:
+			if c >= 0x20 {
+				b = append(b, c)
+				wish.Print(s, "*")
 			}
 		}
 	}
@@ -1736,6 +1773,194 @@ func (a *app) handleMsg(s ssh.Session) {
 	_, _ = a.st.RecordSession(from.ID, s.User(), remoteIP(s), "msg")
 	wish.Println(s, "✓ message left for "+recipient.Name+" — they'll see it in Members ▸ inbox.")
 	_ = s.Exit(0)
+}
+
+// handlePasswd is the self-service "reset my password everywhere" route. It is
+// gated by the caller's registered SSH key (so it doubles as the forgot-password
+// path — no old password needed) and sets ONE new password across every service
+// that has its own credential: git (Forgejo), mail (Mailu webmail), and chat
+// (IRC + The Lounge). Git push and BBS/SSH access are unaffected — those use the
+// member's key, not a password.
+//
+//	ssh passwd@host         interactive: type a new password (twice), applied everywhere
+//	ssh passwd@host < file  non-interactive: read the new password from stdin
+//	echo | ssh passwd@host  empty stdin / no PTY: a strong password is generated for you
+func (a *app) handlePasswd(s ssh.Session) {
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "passwd@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "key not registered — run: ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+
+	pw, generated, err := a.readNewPassword(s)
+	if err != nil {
+		wish.Println(s, "password reset cancelled.")
+		_ = s.Exit(1)
+		return
+	}
+
+	wish.Println(s, "")
+	wish.Println(s, "Setting your password across services…")
+
+	type result struct{ label, detail string }
+	var ok, failed []result
+
+	// git (Forgejo): make sure the account exists, then set the chosen password.
+	if a.forgejo.Configured() {
+		if _, _, e := a.forgejo.EnsureUser(u.Name, u.Email); e != nil {
+			failed = append(failed, result{"git ", e.Error()})
+		} else if e := a.forgejo.SetPassword(u.Name, pw); e != nil {
+			failed = append(failed, result{"git ", e.Error()})
+		} else {
+			ok = append(ok, result{"git ", a.forgejo.LoginURL() + "  (username: " + u.Name + ")"})
+		}
+	}
+
+	// mail (Mailu webmail): ensure the mailbox exists, then set its password.
+	if a.mailEnabled() {
+		if e := a.ensureMailbox(u); e != nil {
+			failed = append(failed, result{"mail", e.Error()})
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			e := a.mailu.SetPassword(ctx, u.Name, a.mailDomain, pw)
+			cancel()
+			if e != nil {
+				failed = append(failed, result{"mail", e.Error()})
+			} else {
+				ok = append(ok, result{"mail", a.webmailURL + "  (" + a.mailAddress(u.Name) + ")"})
+			}
+		}
+	}
+
+	// chat (IRC + The Lounge): set via the privileged helper.
+	if a.irc.Configured() {
+		if e := a.irc.SetPassword(u.Name, pw); e != nil {
+			failed = append(failed, result{"chat", e.Error()})
+		} else {
+			ok = append(ok, result{"chat", "SASL on irc." + rootDomain(a.host) + " / web — account: " + u.Name})
+		}
+	}
+
+	wish.Println(s, "")
+	if generated {
+		wish.Println(s, "Your new password (save it now — it isn't shown again):")
+		wish.Println(s, "    "+pw)
+		wish.Println(s, "")
+	}
+	for _, r := range ok {
+		wish.Println(s, "  ✓ "+r.label+"  "+r.detail)
+	}
+	for _, r := range failed {
+		wish.Println(s, "  ✗ "+r.label+"  "+r.detail)
+	}
+	if len(ok) == 0 && len(failed) == 0 {
+		wish.Println(s, "  (no password-backed services are configured on this server)")
+	}
+
+	_, _ = a.st.RecordSession(u.ID, s.User(), remoteIP(s), "passwd")
+
+	// Best-effort confirmation email (never contains the password). Skipped when
+	// the member has no verified address or SMTP isn't configured.
+	if u.EmailVerified && u.Email != "" && a.mail.Configured() {
+		_ = a.mail.Send(u.Email, "Your "+rootDomain(a.host)+" password was changed",
+			passwdChangedEmailBody(u.Name, len(ok), remoteIP(s)))
+	}
+
+	if len(failed) > 0 {
+		_ = s.Exit(1)
+		return
+	}
+	_ = s.Exit(0)
+}
+
+// readNewPassword obtains the member's new password. With a PTY it prompts twice
+// (masked) and requires the two entries to match and meet a minimum length. With
+// no PTY it reads the password from stdin; if stdin is empty it generates a strong
+// one and returns generated=true so the caller shows it to the member.
+func (a *app) readNewPassword(s ssh.Session) (pw string, generated bool, err error) {
+	const minLen = 8
+	_, _, isPTY := s.Pty()
+	if !isPTY {
+		b, _ := io.ReadAll(io.LimitReader(s, 4096))
+		piped := strings.TrimSpace(string(b))
+		if piped == "" {
+			gen, e := randPassword()
+			return gen, true, e
+		}
+		if len(piped) < minLen {
+			return "", false, fmt.Errorf("password too short")
+		}
+		return piped, false, nil
+	}
+
+	in := bufio.NewReader(s)
+	for {
+		wish.Print(s, "New password (min "+fmt.Sprint(minLen)+" chars, blank to generate one): ")
+		first, e := readSecret(s, in)
+		if e != nil {
+			return "", false, e
+		}
+		if first == "" {
+			gen, e := randPassword()
+			return gen, true, e
+		}
+		if len(first) < minLen {
+			wish.Println(s, "  too short — try again.")
+			continue
+		}
+		wish.Print(s, "Confirm new password: ")
+		second, e := readSecret(s, in)
+		if e != nil {
+			return "", false, e
+		}
+		if first != second {
+			wish.Println(s, "  passwords didn't match — try again.")
+			continue
+		}
+		return first, false, nil
+	}
+}
+
+// randPassword returns a strong URL-safe-ish random password (24 hex chars).
+func randPassword() (string, error) {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// rootDomain strips the first label off a host (bbs.profullstack.com →
+// profullstack.com) so user-facing copy can name the shared apex.
+func rootDomain(host string) string {
+	if i := strings.IndexByte(host, '.'); i >= 0 && strings.Contains(host[i+1:], ".") {
+		return host[i+1:]
+	}
+	return host
+}
+
+// passwdChangedEmailBody is the security-notice email sent after a successful
+// reset. It deliberately never includes the password.
+func passwdChangedEmailBody(name string, services int, ip string) string {
+	return "Hi " + name + ",\n\n" +
+		"Your password was just changed across your account services (git, mail, chat)" +
+		" via ssh passwd@.\n\n" +
+		fmt.Sprintf("    services updated: %d\n", services) +
+		"    request IP:       " + ip + "\n\n" +
+		"If this wasn't you, your SSH key may be compromised — rotate it and contact the operator.\n\n" +
+		"Note: git push and BBS/SSH login use your SSH key, not this password.\n"
 }
 
 // handleFinger prints a classic finger card when someone ssh's to an

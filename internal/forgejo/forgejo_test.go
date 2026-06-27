@@ -148,6 +148,60 @@ func TestEnsureUserResetPatchesWhenExists(t *testing.T) {
 	}
 }
 
+func TestSetPasswordPatchesChosenPassword(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users/alice":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/admin/users/alice":
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	defer srv.Close()
+
+	c := Config{BaseURL: srv.URL, Token: "secret"}
+	if err := c.SetPassword("alice", "member-chosen-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if body["password"] != "member-chosen-pw" {
+		t.Errorf("sent password %v, want member-chosen-pw", body["password"])
+	}
+	// They chose it, so don't force another change on next sign-in.
+	if body["must_change_password"] != false {
+		t.Errorf("expected must_change_password=false, got %v", body["must_change_password"])
+	}
+}
+
+func TestSetPasswordErrorsWhenMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		t.Errorf("must not PATCH a non-existent user (%s %s)", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer srv.Close()
+
+	c := Config{BaseURL: srv.URL, Token: "secret"}
+	if err := c.SetPassword("ghost", "pw"); err == nil {
+		t.Fatal("expected an error when the account does not exist")
+	}
+}
+
+func TestSetPasswordUnconfigured(t *testing.T) {
+	if err := (Config{}).SetPassword("alice", "pw"); err == nil {
+		t.Fatal("expected an error when Forgejo is not configured")
+	}
+}
+
 func TestEnsureUserNoOpWhenExists(t *testing.T) {
 	created := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
