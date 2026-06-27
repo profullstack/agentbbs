@@ -118,6 +118,12 @@ type Store interface {
 
 	// SendMessage leaves a note from→to in the recipient's inbox.
 	SendMessage(from, to, body string) error
+	// SendMessageMulti delivers one body to every recipient in to, in a single
+	// transaction (used for group + broadcast messages so a partial failure
+	// doesn't leave some inboxes written and others not). Duplicate and empty
+	// recipients are skipped; an empty list is a no-op. Returns the number of
+	// inboxes written.
+	SendMessageMulti(from string, to []string, body string) (int, error)
 	// Inbox returns up to n messages addressed to username, newest first.
 	Inbox(username string, n int) ([]Message, error)
 	// UnreadCount reports how many unread messages username has waiting.
@@ -767,6 +773,38 @@ func (s *sqliteStore) SendMessage(from, to, body string) error {
 	_, err := s.db.Exec(`INSERT INTO messages (from_user, to_user, body) VALUES (?,?,?)`,
 		from, to, body)
 	return err
+}
+
+func (s *sqliteStore) SendMessageMulti(from string, to []string, body string) (int, error) {
+	if len(to) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+	stmt, err := tx.Prepare(`INSERT INTO messages (from_user, to_user, body) VALUES (?,?,?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	seen := make(map[string]bool, len(to))
+	sent := 0
+	for _, recipient := range to {
+		if recipient == "" || seen[recipient] {
+			continue
+		}
+		seen[recipient] = true
+		if _, err := stmt.Exec(from, recipient, body); err != nil {
+			return 0, err
+		}
+		sent++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return sent, nil
 }
 
 func (s *sqliteStore) Inbox(username string, n int) ([]Message, error) {

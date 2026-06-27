@@ -58,6 +58,33 @@ func TestMessagingRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSendMessageMulti(t *testing.T) {
+	st := openTest(t)
+	for _, n := range []string{"alice", "bob", "carol"} {
+		_, _ = st.EnsureUser(n, "member", "SHA256:"+n)
+	}
+
+	// Duplicate + empty recipients are skipped; returns the count actually written.
+	sent, err := st.SendMessageMulti("alice", []string{"bob", "carol", "bob", ""}, "group hello")
+	if err != nil {
+		t.Fatalf("multi: %v", err)
+	}
+	if sent != 2 {
+		t.Fatalf("want 2 inboxes written, got %d", sent)
+	}
+	for _, who := range []string{"bob", "carol"} {
+		in, _ := st.Inbox(who, 10)
+		if len(in) != 1 || in[0].Body != "group hello" || in[0].From != "alice" {
+			t.Fatalf("%s inbox = %+v", who, in)
+		}
+	}
+
+	// Empty recipient list is a no-op.
+	if sent, err := st.SendMessageMulti("alice", nil, "x"); err != nil || sent != 0 {
+		t.Fatalf("empty list: sent=%d err=%v", sent, err)
+	}
+}
+
 func TestOnlineUsers(t *testing.T) {
 	st := openTest(t)
 
