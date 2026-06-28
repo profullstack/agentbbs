@@ -103,6 +103,45 @@ func TestSymlinkEscapeBlocked(t *testing.T) {
 	}
 }
 
+func TestSafeJoinAllowsSymlinkedAreaRoot(t *testing.T) {
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real-root")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(dir, "alias-root")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	joined, err := safeJoin(aliasRoot, "notes.txt")
+	if err != nil {
+		t.Fatalf("safeJoin should allow paths under a symlinked/canonicalized root: %v", err)
+	}
+	if !within(filepath.Clean(aliasRoot), joined) {
+		t.Fatalf("safeJoin returned %q, want under lexical root %q", joined, aliasRoot)
+	}
+}
+
+func TestSafeJoinRejectsEscapeThroughSymlinkedAreaRoot(t *testing.T) {
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real-root")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(dir, "alias-root")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := os.Symlink("/etc", filepath.Join(realRoot, "escape")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	if _, err := safeJoin(aliasRoot, "escape/passwd"); err == nil {
+		t.Fatal("safeJoin should reject paths that escape through a symlink below the area root")
+	}
+}
+
 func TestOwnPublicWritable(t *testing.T) {
 	svc, _, u := newTestService(t)
 

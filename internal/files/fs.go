@@ -103,17 +103,28 @@ func (s *session) resolve(p string) (resolved, error) {
 // safeJoin joins rel onto root and verifies the result stays within root, both
 // lexically and after resolving any symlinks that already exist on the path.
 func safeJoin(root, rel string) (string, error) {
+	root = filepath.Clean(root)
 	full := filepath.Join(root, filepath.FromSlash(rel))
 	full = filepath.Clean(full)
 	if !within(root, full) {
 		return "", errEscape
 	}
+
 	// Symlink guard: resolve the longest existing prefix and re-check. This
 	// catches a symlink (created out-of-band) that points outside the area.
+	// Canonicalize the area root too; otherwise a legitimate path under a root
+	// reached through an OS symlink (for example /var -> /private/var on macOS, or
+	// a symlinked data directory) can look like it escaped once EvalSymlinks is
+	// applied to the probe.
+	resolvedRoot := root
+	if rr, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = filepath.Clean(rr)
+	}
 	probe := full
 	for {
 		if resolvedPath, err := filepath.EvalSymlinks(probe); err == nil {
-			if !within(root, resolvedPath) {
+			resolvedPath = filepath.Clean(resolvedPath)
+			if !within(resolvedRoot, resolvedPath) {
 				return "", errEscape
 			}
 			break
