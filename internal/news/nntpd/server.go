@@ -177,9 +177,18 @@ func parseRange(spec string) (low, high int64) {
 		}
 		return h, h
 	}
+	if len(parts) != 2 {
+		return 0, 0 // malformed (e.g. "1-2-3") — empty range
+	}
 	l, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		return 0, 0 // malformed — empty range
+	}
+	// Open-ended range "low-" means "from low to the highest article"
+	// (RFC 3977: a range is a single number, "number-", or
+	// "number-number"). An empty upper bound is unbounded, not malformed.
+	if parts[1] == "" {
+		return l, math.MaxInt64
 	}
 	h, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
