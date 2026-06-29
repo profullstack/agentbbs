@@ -108,12 +108,19 @@ func safeJoin(root, rel string) (string, error) {
 	if !within(root, full) {
 		return "", errEscape
 	}
+	// Canonicalize the root so that a symlinked storage root (e.g. /var →
+	// /private/var on macOS, or an operator-configured symlink) doesn't cause
+	// false-positive escapes when EvalSymlinks resolves the full path.
+	canonRoot := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		canonRoot = r
+	}
 	// Symlink guard: resolve the longest existing prefix and re-check. This
 	// catches a symlink (created out-of-band) that points outside the area.
 	probe := full
 	for {
 		if resolvedPath, err := filepath.EvalSymlinks(probe); err == nil {
-			if !within(root, resolvedPath) {
+			if !within(canonRoot, resolvedPath) {
 				return "", errEscape
 			}
 			break

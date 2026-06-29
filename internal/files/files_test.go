@@ -194,6 +194,58 @@ func TestUsageCountsOwnedAreas(t *testing.T) {
 	}
 }
 
+func TestSafeJoinSymlinkedRoot(t *testing.T) {
+	// A storage root reached through a symlink must not cause valid child paths
+	// to be rejected. Before the fix, EvalSymlinks resolved the probe to the
+	// canonical path while within() still compared against the lexical root,
+	// producing a false-positive errEscape.
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(dir, "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	// A normal file inside the real root, accessed via the symlinked root.
+	target := filepath.Join(realRoot, "notes.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := safeJoin(linkRoot, "notes.txt")
+	if err != nil {
+		t.Fatalf("safeJoin with symlinked root rejected valid path: %v", err)
+	}
+	if want := filepath.Join(linkRoot, "notes.txt"); got != want {
+		t.Errorf("safeJoin = %q, want %q", got, want)
+	}
+}
+
+func TestSafeJoinChildSymlinkEscapeStillBlocked(t *testing.T) {
+	// A child symlink inside the area that points outside must still be
+	// rejected, even when the root itself is a symlink.
+	dir := t.TempDir()
+	realRoot := filepath.Join(dir, "real")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(dir, "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	// Plant an escaping symlink inside the (real) workspace.
+	escape := filepath.Join(realRoot, "escape")
+	if err := os.Symlink("/etc", escape); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := safeJoin(linkRoot, "escape/passwd"); err == nil {
+		t.Error("path through an escaping child symlink must be rejected")
+	}
+}
+
 func TestRevokeBlocksAndQuotaOverride(t *testing.T) {
 	svc, st, u := newTestService(t)
 	if err := st.SetFilesQuota(u.ID, 4096); err != nil {
