@@ -271,8 +271,8 @@ Invaders, Pac-Man, Tetris, Snake &amp; Hangman</b>.</p>
 <h2>IRC from a desktop client — irssi, HexChat, WeeChat</h2>
 <p class="dim">The members' IRC lives at <code>${IRC_DOMAIN}:6697</code> (TLS). Members authenticate with
 <b class="dim">SASL PLAIN</b>: <b class="dim">username = your BBS name</b>,
-<b class="dim">password = your IRC password</b>. The <a href="https://chat.${DOMAIN}">web client</a>
-(chat.${DOMAIN}) is already configured; for a desktop client, set it up once. <b class="dim">irssi:</b></p>
+<b class="dim">password = your IRC password</b>. The <a href="https://${CHAT_DOMAIN}">web client</a>
+(${CHAT_DOMAIN}) is already configured; for a desktop client, set it up once. <b class="dim">irssi:</b></p>
 <pre class="cmds"><b>/network add -sasl_username YOURNAME -sasl_password YOURPASSWORD -sasl_mechanism PLAIN ProfullstackBBS</b>
 <b>/server add -tls -tls_verify -network ProfullstackBBS ${IRC_DOMAIN} 6697</b>
 <b>/connect ProfullstackBBS</b>
