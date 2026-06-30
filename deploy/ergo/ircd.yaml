@@ -110,6 +110,12 @@ server:
         # restrictions.
         allowed-origins:
             - "https://__DOMAIN__"
+            - "https://__IRC_DOMAIN__"
+            # TronBrowser's in-extension IRC client connects from a
+            # chrome-extension:// page (the ID is path-derived, so it differs per
+            # install — hence the wildcard). Safe: the network is members-only,
+            # every WS client must still pass SASL, so origin isn't the gate.
+            - "chrome-extension://*"
             # - "https://ergo.chat"
             # - "https://*.ergo.chat"
 
@@ -156,8 +162,11 @@ server:
     #password: "$2a$04$0123456789abcdef0123456789abcdef0123456789abcdef01234"
 
     # motd filename
-    # if you change the motd, you should move it to ircd.motd
-    motd: ergo.motd
+    # ABSOLUTE path on purpose: Ergo resolves a relative motd path against its
+    # process working directory (the systemd unit sets WorkingDirectory=/opt/ergo),
+    # NOT the config dir — so a bare "ergo.motd" makes Ergo look in /opt/ergo and
+    # return "MOTD File is missing". refresh-motd.sh writes /etc/ergo/ergo.motd.
+    motd: /etc/ergo/ergo.motd
 
     # motd formatting codes
     # if this is true, the motd is escaped using formatting codes like $c, $b, and $i
