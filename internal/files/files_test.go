@@ -173,6 +173,7 @@ func TestWebSaveOverQuotaPreservesExistingFile(t *testing.T) {
 	svc, _, u := newTestService(t)
 	sess, _ := svc.newSession(u)
 	sess.quota = 5
+	sess.used.Store(0) // isolate the writer from the seeded-README baseline
 
 	if _, err := sess.webSave("/me/note.txt", strings.NewReader("ok")); err != nil {
 		t.Fatalf("initial save failed: %v", err)
