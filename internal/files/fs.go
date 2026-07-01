@@ -305,10 +305,13 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 		}
 		existing = fi.Size()
 	}
-	f, err := os.OpenFile(res.real, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	dir := filepath.Dir(res.real)
+	f, err := os.CreateTemp(dir, ".upload-*")
 	if err != nil {
 		return 0, err
 	}
+	tmpName := f.Name()
+	defer func() { _ = os.Remove(tmpName) }()
 	limit := int64(-1)
 	if metered(res.area) {
 		if limit = s.quota - (s.used.Load() - existing); limit < 0 {
@@ -318,16 +321,49 @@ func (s *session) webSave(vpath string, r io.Reader) (int64, error) {
 	n, werr := copyLimited(f, r, limit)
 	cerr := f.Close()
 	if werr != nil {
-		_ = os.Remove(res.real)
 		return 0, werr
 	}
 	if cerr != nil {
 		return 0, cerr
 	}
+	if err := replaceFile(tmpName, res.real); err != nil {
+		return 0, err
+	}
 	if metered(res.area) {
 		s.used.Add(n - existing)
 	}
 	return n, nil
+}
+
+func replaceFile(src, dst string) error {
+	renameErr := os.Rename(src, dst)
+	if renameErr == nil {
+		return nil
+	}
+	if _, err := os.Stat(dst); err != nil {
+		return renameErr
+	}
+	dir := filepath.Dir(dst)
+	backup, err := os.CreateTemp(dir, ".replace-*")
+	if err != nil {
+		return err
+	}
+	backupName := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupName)
+		return err
+	}
+	if err := os.Remove(backupName); err != nil {
+		return err
+	}
+	if err := os.Rename(dst, backupName); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		_ = os.Rename(backupName, dst)
+		return err
+	}
+	return os.Remove(backupName)
 }
 
 // webMkdir and webRemove reuse the SFTP-side guards (root/writable checks).

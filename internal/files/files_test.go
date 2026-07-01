@@ -169,6 +169,27 @@ func TestQuotaEnforced(t *testing.T) {
 	}
 }
 
+func TestWebSaveOverQuotaPreservesExistingFile(t *testing.T) {
+	svc, _, u := newTestService(t)
+	sess, _ := svc.newSession(u)
+	sess.quota = 5
+
+	if _, err := sess.webSave("/me/note.txt", strings.NewReader("ok")); err != nil {
+		t.Fatalf("initial save failed: %v", err)
+	}
+	if _, err := sess.webSave("/me/note.txt", strings.NewReader("too-large")); err != errQuota {
+		t.Fatalf("over-quota replace: got %v, want errQuota", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(svc.privRoot(u.Name), "note.txt"))
+	if err != nil {
+		t.Fatalf("existing file should remain after failed replace: %v", err)
+	}
+	if string(got) != "ok" {
+		t.Fatalf("existing file changed after failed replace: %q", got)
+	}
+}
+
 func TestUsage(t *testing.T) {
 	svc, _, u := newTestService(t)
 	if err := svc.ensureWorkspace(u.Name); err != nil {
