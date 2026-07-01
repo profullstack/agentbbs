@@ -23,6 +23,7 @@
 package files
 
 import (
+	_ "embed"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -33,6 +34,15 @@ import (
 
 	"github.com/profullstack/agentbbs/internal/store"
 )
+
+// defaultPublicReadme seeds every member's public area so ~<name>/public is
+// never a bare "(empty)" listing — it explains the SFTP endpoint and the two
+// areas. Written on first materialization of the area (and re-seeded if absent),
+// so it self-heals existing members the next time they connect or their page is
+// viewed. Members are free to delete or replace it.
+//
+//go:embed default_readme.txt
+var defaultPublicReadme []byte
 
 // Setting keys persisted in files_settings.
 const (
@@ -111,9 +121,21 @@ func (s *Service) ensureWorkspace(user string) error {
 }
 
 // ensureUserPub creates a member's public area if absent. It is world-readable
-// (0o755) because the web host serves it anonymously at ~<name>/public.
+// (0o755) because the web host serves it anonymously at ~<name>/public. It also
+// seeds a default README.txt when the area has none, so a freshly-provisioned
+// (or previously-empty) public listing greets visitors with the SFTP how-to
+// instead of "(empty)". Members may delete or overwrite it freely.
 func (s *Service) ensureUserPub(user string) error {
-	return os.MkdirAll(s.userPub(user), 0o755)
+	dir := s.userPub(user)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	readme := filepath.Join(dir, "README.txt")
+	if _, err := os.Stat(readme); os.IsNotExist(err) {
+		// Best-effort: a seed failure must not block file access.
+		_ = os.WriteFile(readme, defaultPublicReadme, 0o644)
+	}
+	return nil
 }
 
 // ownedUsage sums a member's two owned areas — their private /me and their

@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,32 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/profullstack/agentbbs/internal/store"
 )
+
+func TestEnsureUserPubSeedsReadme(t *testing.T) {
+	svc, _, u := newTestService(t)
+	if err := svc.ensureUserPub(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	readme := filepath.Join(svc.userPub(u.Name), "README.txt")
+	got, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatalf("public area not seeded with README.txt: %v", err)
+	}
+	if !bytes.Equal(got, defaultPublicReadme) {
+		t.Errorf("seeded README content does not match the embedded default")
+	}
+	// Re-materialization must not clobber a member's own README.
+	custom := []byte("this is my own readme, hands off\n")
+	if err := os.WriteFile(readme, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ensureUserPub(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(readme); !bytes.Equal(got, custom) {
+		t.Errorf("ensureUserPub overwrote the member's own README: %q", got)
+	}
+}
 
 func newTestService(t *testing.T) (*Service, store.Store, store.User) {
 	t.Helper()
@@ -124,7 +151,8 @@ func TestOwnPublicWritable(t *testing.T) {
 func TestQuotaEnforced(t *testing.T) {
 	svc, _, u := newTestService(t)
 	sess, _ := svc.newSession(u)
-	sess.quota = 100 // tiny
+	sess.quota = 100   // tiny
+	sess.used.Store(0) // isolate the writer from the seeded-README baseline
 
 	f, err := os.Create(filepath.Join(svc.privRoot(u.Name), "big"))
 	if err != nil {
@@ -170,6 +198,9 @@ func TestUsageCountsOwnedAreas(t *testing.T) {
 	if err := svc.ensureUserPub(u.Name); err != nil {
 		t.Fatal(err)
 	}
+	// ensureUserPub seeds a default README.txt into the public area; it counts
+	// toward the gauge like any other public file.
+	seed := int64(len(defaultPublicReadme))
 	// Both of the member's owned areas — private /me and their public /public
 	// (<root>/public/<name>) — count toward the quota gauge. Another member's
 	// public area does not.
@@ -189,8 +220,8 @@ func TestUsageCountsOwnedAreas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usage.Bytes != 768 {
-		t.Errorf("usage = %d, want 768 (512 /me + 256 /public, other members excluded)", usage.Bytes)
+	if want := int64(768) + seed; usage.Bytes != want {
+		t.Errorf("usage = %d, want %d (512 /me + 256 /public + seeded README, other members excluded)", usage.Bytes, want)
 	}
 }
 

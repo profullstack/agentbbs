@@ -202,9 +202,11 @@ func TestWebAnonPublicSite(t *testing.T) {
 }
 
 func TestWebAnonMemberSiteEmptyNot404(t *testing.T) {
-	// A registered member who has not published anything yet (no public folder on
-	// disk) is reachable at ~name/public as an empty listing, not a 404. A missing
-	// file under them, and an unknown member, both still 404.
+	// A registered member who has not published anything yet is reachable at
+	// ~name/public as a browsable listing, not a 404 — materializing the area
+	// seeds a default README.txt, so the listing greets visitors with it rather
+	// than "(empty)". A missing file under them, and an unknown member, both
+	// still 404.
 	svc, st, _ := newTestService(t)
 	if _, err := st.EnsureUser("bob", "member", "SHA256:bobkey"); err != nil {
 		t.Fatal(err)
@@ -216,8 +218,8 @@ func TestWebAnonMemberSiteEmptyNot404(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("~bob/public (member, empty): want 200, got %d", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "(empty)") {
-		t.Fatalf("~bob/public should render an empty listing: %.200s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "README.txt") {
+		t.Fatalf("~bob/public should render the seeded README in its listing: %.200s", rr.Body.String())
 	}
 
 	rr = httptest.NewRecorder()
