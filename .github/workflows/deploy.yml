@@ -134,6 +134,14 @@ jobs:
           fi
           git -C "$SRC" fetch --depth 1 origin "$BRANCH"
           git -C "$SRC" reset --hard "origin/$BRANCH"
+          # Preempt the self-update timer. It redeploys from source (no
+          # SKIP_BUILD) and can hold setup.sh's flock for >5min while compiling
+          # on this tiny droplet, which would starve and time out the deploy
+          # below. This CI push is authoritative (prebuilt binaries + reset to
+          # the exact commit), so stop any in-flight timer run to release the
+          # lock and pause the timer so it can't re-fire mid-deploy; setup.sh
+          # re-enables the timer at the end of its run.
+          systemctl stop agentbbs-update.timer agentbbs-update.service 2>/dev/null || true
           # Install the runner-built binaries, then tell setup.sh not to compile.
           install -m 0755 /tmp/agentbbs-deploy-agentbbs   /usr/local/bin/agentbbs
           install -m 0755 /tmp/agentbbs-deploy-ascii-live /usr/local/bin/ascii-live
