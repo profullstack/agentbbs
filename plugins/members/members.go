@@ -51,6 +51,7 @@ type person struct {
 	online   bool
 	lastSeen time.Time
 	seenOK   bool
+	joined   time.Time
 }
 
 type model struct {
@@ -92,7 +93,7 @@ func (m *model) load() tea.Cmd {
 			if u.Name == me {
 				continue // don't list yourself in the directory
 			}
-			p := person{name: u.Name, kind: u.Kind, online: online[strings.ToLower(u.Name)]}
+			p := person{name: u.Name, kind: u.Kind, online: online[strings.ToLower(u.Name)], joined: u.CreatedAt}
 			if t, ok, _ := st.LastSeen(u.ID); ok {
 				p.lastSeen, p.seenOK = t, true
 			}
@@ -410,9 +411,12 @@ func (m *model) listView() string {
 			c = cur.Render("❯ ")
 			name = sel.Render(name)
 		}
-		seen := "online"
+		seen := "online now"
 		if !p.online {
-			seen = "last " + relTime(p.lastSeen, p.seenOK)
+			seen = "last active: " + relTimeLong(p.lastSeen, p.seenOK)
+		}
+		if !p.joined.IsZero() {
+			seen += " · joined " + p.joined.Format("2006-01-02")
 		}
 		row := fmt.Sprintf("%s%s %s %-20s %-8s %s", c, box, dot, name, p.kind, dim.Render(seen))
 		s += row + "\n"
@@ -505,5 +509,30 @@ func relTime(t time.Time, ok bool) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// relTimeLong renders a spelled-out "3 days ago" / "2 hours ago" / "just now"
+// age for the public directory. ok=false → "never".
+func relTimeLong(t time.Time, ok bool) string {
+	if !ok || t.IsZero() {
+		return "never"
+	}
+	d := time.Since(t)
+	plural := func(n int, unit string) string {
+		if n == 1 {
+			return fmt.Sprintf("1 %s ago", unit)
+		}
+		return fmt.Sprintf("%d %ss ago", n, unit)
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return plural(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return plural(int(d.Hours()), "hour")
+	default:
+		return plural(int(d.Hours()/24), "day")
 	}
 }

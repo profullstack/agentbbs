@@ -344,6 +344,9 @@ func (m Model) viewUsers() (string, string) {
 		if u.EmailVerified {
 			flags = append(flags, "verified")
 		}
+		if !u.CreatedAt.IsZero() {
+			flags = append(flags, "joined "+u.CreatedAt.Format("2006-01-02"))
+		}
 		name := u.Name
 		if u.Banned {
 			name = warnStyle.Render(name + " [BANNED]")
