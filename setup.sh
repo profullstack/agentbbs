@@ -52,7 +52,7 @@ IRC_NETWORK="${IRC_NETWORK:-ProfullstackBBS}"  # IRC network name shown to clien
 ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
 FORGEJO="${FORGEJO:-1}"                  # set 0 to skip the AgentGit Forgejo backend (git.${DOMAIN#*.})
 GIT_DOMAIN="${GIT_DOMAIN:-git.${DOMAIN#*.}}"  # AgentGit host (default: git.<root-of-DOMAIN>, e.g. git.profullstack.com)
-FORGEJO_VERSION="${FORGEJO_VERSION:-11.0.1}"  # Forgejo release to install
+FORGEJO_VERSION="${FORGEJO_VERSION:-11.0.15}"  # Forgejo release to install (latest 11.0.x LTS patch)
 MAIL_STACK="${MAIL_STACK:-1}"       # set 0 to skip the co-located Mailu mail stack (mail.${DOMAIN#*.}). NOT named MAIL: that is a reserved env var (the mail-spool path, e.g. /var/mail/root) which PAM sets under sudo, so a CI deploy inherited MAIL=/var/mail/root and silently dropped the mail Caddy route + §9e provisioning.
 MAIL_DOMAIN="${MAIL_DOMAIN:-mail.${DOMAIN#*.}}"  # mail host (default: mail.<root-of-DOMAIN>, e.g. mail.profullstack.com)
 FORGEJO_HTTP_ADDR="${FORGEJO_HTTP_ADDR:-127.0.0.1:3000}"  # Forgejo loopback HTTP (Caddy fronts it)
