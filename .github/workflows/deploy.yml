@@ -38,7 +38,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure SSH
         env:
@@ -71,7 +71,7 @@ jobs:
           echo "goarch=$goarch" >> "$GITHUB_OUTPUT"
           echo "::notice::droplet arch $uname_m -> GOARCH=$goarch"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
