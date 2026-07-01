@@ -1,0 +1,137 @@
+name: mailu-update
+
+# Keep the self-hosted Mailu stack on the latest patch of its pinned series.
+#
+# The Mailu compose stack (deploy/mailu) pins the FLOATING series tags
+# (ghcr.io/mailu/*:2024.06). Upstream ships frequent patch releases within that
+# series (2024.06.NN) with security fixes, but a running host only picks them up
+# when someone runs `docker compose pull`. Left alone, the box drifts behind.
+#
+# This workflow SSHes to the droplet on a weekly schedule (and on demand), backs
+# up the irreplaceable state (DKIM keys + admin DB), pulls the newest images for
+# the pinned series, recreates the containers, and health-checks the result.
+# It stays WITHIN the pinned series on purpose: crossing to a future series
+# (e.g. a 2025.xx) can carry DB migrations and config changes, so that is a
+# deliberate PR that edits the tags in deploy/mailu/*.yml — not an auto-pull.
+#
+# The agentbbs Go binary already redeploys on every push (deploy.yml) and the
+# rootless podman pods rebuild from upstream base images, so this workflow is the
+# missing piece: it covers the one long-lived docker-compose stack on the box.
+#
+# Reuses the same repo secrets as deploy.yml:
+#   DEPLOY_SSH_KEY  private key whose public half is in the droplet admin user's
+#                   authorized_keys
+#   DEPLOY_HOST     bbs.profullstack.com (or the droplet IP)
+#   DEPLOY_USER     admin SSH user (default: root)
+#   DEPLOY_PORT     admin SSH port  (default: 2202)
+
+on:
+  schedule:
+    # 06:30 UTC every Monday. Off-peak; adjust as you like.
+    - cron: '30 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      prune:
+        description: 'Prune dangling images after the update'
+        type: boolean
+        default: true
+
+# Share deploy.yml's concurrency group so an image pull can never race a code
+# deploy on the same host — whichever starts first runs to completion, the other
+# queues behind it.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "::error::DEPLOY_SSH_KEY secret is not set"; exit 1; }
+          test -n "$DEPLOY_HOST"    || { echo "::error::DEPLOY_HOST secret is not set"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull latest Mailu images, recreate, health-check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
+          PRUNE: ${{ github.event_name == 'schedule' && 'true' || inputs.prune }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
+              -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "sudo -n env PRUNE=$(printf %q "$PRUNE") bash -s" <<'REMOTE'
+          set -euo pipefail
+          MAILU_DIR=/opt/agentbbs/deploy/mailu
+          cd "$MAILU_DIR"
+
+          if [ ! -f mailu.env ]; then
+            echo "::notice::mailu.env not present at ${MAILU_DIR} — stack not deployed, nothing to update"
+            exit 0
+          fi
+
+          echo "== images before =="
+          docker compose images
+
+          # Back up the irreplaceable bits before touching anything: the DKIM
+          # signing keys (data/dkim) and the admin database (data/data, sqlite).
+          # Mailboxes (data/mail) are large and are NOT touched by an image pull,
+          # so we deliberately skip them here — back those up separately.
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          install -d -m 700 backups
+          tar czf "backups/mailu-state-${ts}.tgz" \
+            $( [ -d data/dkim ] && echo data/dkim ) \
+            $( [ -d data/data ] && echo data/data ) 2>/dev/null || true
+          echo "::notice::backed up DKIM + admin DB to backups/mailu-state-${ts}.tgz"
+          # Keep only the 10 most recent state backups.
+          ls -1t backups/mailu-state-*.tgz 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+          echo "== pulling latest patch for the pinned series =="
+          docker compose pull
+
+          echo "== recreating containers =="
+          docker compose up -d
+
+          # Give services a moment, then verify. Mailu's front serves HTTP on
+          # 127.0.0.1:8080 (Caddy fronts it); a reachable webmail means the
+          # stack came back up.
+          ok=0
+          code=""
+          for i in $(seq 1 30); do
+            code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/ || true)"
+            case "$code" in
+              2??|3??) ok=1; break ;;
+            esac
+            sleep 3
+          done
+
+          echo "== compose status =="
+          docker compose ps
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::Mailu front did not answer on 127.0.0.1:8080 after update — check 'docker compose logs' in ${MAILU_DIR}. Restore from backups/mailu-state-${ts}.tgz if needed."
+            exit 1
+          fi
+          echo "::notice::Mailu front is answering (HTTP ${code}) after update"
+
+          echo "== images after =="
+          docker compose images
+
+          if [ "${PRUNE:-false}" = "true" ]; then
+            echo "== pruning dangling images =="
+            docker image prune -f
+          fi
+          REMOTE

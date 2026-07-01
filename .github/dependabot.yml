@@ -1,0 +1,42 @@
+# Keep agentbbs's pinned dependencies current automatically. Dependabot opens
+# (review-gated) PRs when a newer version ships — nothing auto-merges, so a bad
+# bump can't silently reach production.
+#
+# Coverage:
+#   - github-actions : the action pins in .github/workflows/* (checkout, setup-go…)
+#   - gomod          : Go module dependencies (go.mod / go.sum)
+#   - docker         : image tags in the Mailu compose stack and the pod Containerfile
+#
+# NOT covered (Dependabot can't watch shell-string pins): FORGEJO_VERSION and
+# ERGO_VERSION in setup.sh — bump those by hand, or switch to Renovate (which can
+# watch them via a custom regex manager). The Mailu *runtime* patch level is kept
+# current separately by .github/workflows/mailu-update.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  # Mailu compose stack — bumps ghcr.io/mailu/* image tags.
+  - package-ecosystem: docker
+    directory: /deploy/mailu
+    schedule:
+      interval: weekly
+
+  # Pod base image (docker.io/library/ubuntu).
+  - package-ecosystem: docker
+    directory: /pods
+    schedule:
+      interval: weekly
