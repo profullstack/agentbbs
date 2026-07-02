@@ -165,27 +165,35 @@ func (s *Server) Process(nc net.Conn) {
 	}
 }
 
+// parseRange parses an NNTP article range spec (RFC 3977 §6.2.3 / RFC 2980).
+// An empty bound means "the extreme": "5-" is article 5 through the last
+// article, "-10" is the first article through 10, "5-10" is 5..10, "5" is the
+// single article 5, and "" is all articles. A genuinely malformed bound yields
+// an empty range (0, 0).
 func parseRange(spec string) (low, high int64) {
 	if spec == "" {
 		return 0, math.MaxInt64
 	}
-	parts := strings.Split(spec, "-")
-	if len(parts) == 1 {
-		h, err := strconv.ParseInt(parts[0], 10, 64)
+	parts := strings.SplitN(spec, "-", 2)
+	low, high = 0, math.MaxInt64
+	if parts[0] != "" {
+		v, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
-			return 0, 0 // malformed — empty range instead of all articles
+			return 0, 0 // malformed low bound — empty range
 		}
-		return h, h
+		low = v
 	}
-	l, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return 0, 0 // malformed — empty range
+	if len(parts) == 1 { // single article, e.g. "5"
+		return low, low
 	}
-	h, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return 0, 0 // malformed — empty range
+	if parts[1] != "" {
+		v, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return 0, 0 // malformed high bound — empty range
+		}
+		high = v
 	}
-	return l, h
+	return low, high
 }
 
 func handleOver(args []string, s *session, c *textproto.Conn) error {
