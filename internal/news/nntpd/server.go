@@ -181,6 +181,9 @@ func parseRange(spec string) (low, high int64) {
 	if err != nil {
 		return 0, 0 // malformed — empty range
 	}
+	if parts[1] == "" {
+		return l, math.MaxInt64 // open-ended range like "5-"
+	}
 	h, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
 		return 0, 0 // malformed — empty range
