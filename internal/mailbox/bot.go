@@ -53,7 +53,11 @@ func RunBot(ctx context.Context, c *Client, args []string, in io.Reader, out io.
 		}
 		limit := 0
 		if len(args) > 2 {
-			limit, _ = strconv.Atoi(args[2])
+			n, err := strconv.Atoi(args[2])
+			if err != nil || n <= 0 {
+				return fail(fmt.Errorf("invalid list limit %q", args[2]))
+			}
+			limit = n
 		}
 		v, err := c.List(ctx, mailbox, limit)
 		if err != nil {
