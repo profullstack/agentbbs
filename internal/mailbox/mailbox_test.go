@@ -1,8 +1,10 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +210,23 @@ func TestFlagAndDelete(t *testing.T) {
 	}
 	if _, ok, _ := tr.ReadMessage(context.Background(), Inbox, 1); ok {
 		t.Fatal("uid 1 should be deleted")
+	}
+}
+
+func TestRunBotListRejectsInvalidLimit(t *testing.T) {
+	c := paidClient(seeded())
+
+	for _, args := range [][]string{
+		{"list", Inbox, "nope"},
+		{"list", Inbox, "-5"},
+	} {
+		var out bytes.Buffer
+		err := RunBot(context.Background(), c, args, strings.NewReader(""), &out)
+		if err == nil {
+			t.Fatalf("RunBot(%v) expected error", args)
+		}
+		if !strings.Contains(out.String(), "invalid list limit") {
+			t.Fatalf("RunBot(%v) output = %q, want invalid limit error", args, out.String())
+		}
 	}
 }
