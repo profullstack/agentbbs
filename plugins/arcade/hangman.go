@@ -78,10 +78,11 @@ func (h *hangman) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		return h, back
 	case "r":
+		// Only "restart" once dead; during play, r is a normal letter guess
+		// and must fall through to the guessing logic below.
 		if h.dead {
 			return newHangman(h.user, h.ctx), nil
 		}
-		return h, nil
 	case " ", "enter":
 		if h.won {
 			h.deal() // advance to the next word
