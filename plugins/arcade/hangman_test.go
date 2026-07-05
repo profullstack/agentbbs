@@ -68,6 +68,18 @@ func TestHangmanDeathAfterSixMisses(t *testing.T) {
 	}
 }
 
+// The "r" restart binding must not swallow r as a letter guess during play.
+func TestHangmanLowercaseRIsAGuess(t *testing.T) {
+	h := newTestHangman("ROUTER")
+	for _, r := range "router" {
+		m, _ := h.Update(key(r))
+		h = m.(*hangman)
+	}
+	if !h.won {
+		t.Fatalf("lowercase r should count as a guess and solve ROUTER")
+	}
+}
+
 func TestHangmanLowercaseInputAndAdvance(t *testing.T) {
 	h := newTestHangman("CAT")
 	for _, r := range "cat" { // lowercase should still solve
