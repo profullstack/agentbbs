@@ -124,6 +124,38 @@ func TestWebRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWebMutationsRejectGet(t *testing.T) {
+	h, _ := webTestHandler(t)
+	cookie := loginCookie(t, h)
+	uploadTo(t, h, cookie, "/me", "keep.txt", "keep me")
+
+	for _, target := range []string{
+		"/upload?dir=/me",
+		"/mkdir?dir=/me&name=from-get",
+		"/delete?path=/me/keep.txt",
+	} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.AddCookie(cookie)
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("GET %s: want 405, got %d", target, rr.Code)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?path=/me", nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+	body := rr.Body.String()
+	if !strings.Contains(body, "keep.txt") {
+		t.Fatal("GET /delete removed the file")
+	}
+	if strings.Contains(body, "from-get") {
+		t.Fatal("GET /mkdir created a directory")
+	}
+}
+
 // loginCookie logs alice in and returns her session cookie.
 func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
 	t.Helper()
