@@ -230,3 +230,30 @@ func TestRunBotListRejectsInvalidLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestRunBotFlagSeenRejectInvalidToggle(t *testing.T) {
+	tr := seeded()
+	c := paidClient(tr)
+
+	for _, args := range [][]string{
+		{"flag", Inbox, "1", "maybe"},
+		{"seen", Inbox, "1", "maybe"},
+	} {
+		var out bytes.Buffer
+		err := RunBot(context.Background(), c, args, strings.NewReader(""), &out)
+		if err == nil {
+			t.Fatalf("RunBot(%v) expected error", args)
+		}
+		if !strings.Contains(out.String(), "use on/off") {
+			t.Fatalf("RunBot(%v) output = %q, want on/off error", args, out.String())
+		}
+	}
+
+	msg, ok, err := tr.ReadMessage(context.Background(), Inbox, 1)
+	if err != nil || !ok {
+		t.Fatalf("ReadMessage: ok=%v err=%v", ok, err)
+	}
+	if msg.Flagged || msg.Seen {
+		t.Fatalf("invalid flag/seen toggles should not mutate message: %+v", msg.MessageSummary)
+	}
+}

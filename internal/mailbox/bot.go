@@ -137,7 +137,11 @@ func RunBot(ctx context.Context, c *Client, args []string, in io.Reader, out io.
 		}
 		on := true
 		if len(args) > 3 {
-			on = !strings.EqualFold(args[3], "off") && args[3] != "false" && args[3] != "0"
+			var ok bool
+			on, ok = parseBotBool(args[3])
+			if !ok {
+				return fail(fmt.Errorf("invalid %s value %q; use on/off", args[0], args[3]))
+			}
 		}
 		if strings.ToLower(args[0]) == "flag" {
 			err = c.Flag(ctx, mailbox, uid, on)
@@ -174,4 +178,15 @@ func mailboxUID(args []string) (string, uint32, error) {
 		return "", 0, fmt.Errorf("invalid uid %q", args[2])
 	}
 	return args[1], uint32(uid), nil
+}
+
+func parseBotBool(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "1":
+		return true, true
+	case "off", "false", "0":
+		return false, true
+	default:
+		return false, false
+	}
 }
