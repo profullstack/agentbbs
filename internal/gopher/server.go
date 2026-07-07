@@ -303,8 +303,8 @@ func (s *Server) userTree(prefix, sel, area string) Response {
 	base := filepath.Join(s.dataDir, "users", name, area)
 
 	// Confine sub to base. Cleaning as an absolute path drops any leading ".."
-	// components; the HasPrefix re-check is belt-and-suspenders against symlink
-	// or edge cases.
+	// components; the HasPrefix re-check is belt-and-suspenders against edge
+	// cases before resolving symlinks below.
 	clean := filepath.Clean("/" + sub)
 	target := filepath.Join(base, clean)
 	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
@@ -315,6 +315,17 @@ func (s *Server) userTree(prefix, sel, area string) Response {
 	if err != nil {
 		return errResp("not found")
 	}
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return errResp("not found")
+	}
+	targetReal, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return errResp("not found")
+	}
+	if targetReal != baseReal && !strings.HasPrefix(targetReal, baseReal+string(os.PathSeparator)) {
+		return errResp("forbidden")
+	}
 	linkBase := "/~" + name
 	if prefix == "files" {
 		linkBase = "/files/~" + name
@@ -322,9 +333,9 @@ func (s *Server) userTree(prefix, sel, area string) Response {
 	rel := strings.TrimPrefix(strings.TrimPrefix(target, base), string(os.PathSeparator))
 
 	if info.IsDir() {
-		return s.dirMenu(target, linkBase, rel, name)
+		return s.dirMenu(targetReal, linkBase, rel, name)
 	}
-	data, err := os.ReadFile(target)
+	data, err := os.ReadFile(targetReal)
 	if err != nil {
 		return errResp("unreadable")
 	}
