@@ -70,6 +70,12 @@ var NewsNames = map[string]bool{"news": true}
 // an interactive TUI with a PTY, or a JSON bot mode with a command/no PTY.
 var MailNames = map[string]bool{"mail": true}
 
+// GopherNames route a member into "hedgehog": the SSH-authenticated gopher
+// browser (see internal/gopher). Free for any registered member, like news@.
+// The public, unauthenticated Gopher surface is the port-70 listener, not a
+// route here (RFC 1436 has no auth verb — see internal/gopher for the rationale).
+var GopherNames = map[string]bool{"gopher": true}
+
 // FilesAdminNames route an operator into the SFTP server management TUI. Members
 // transfer files via the "sftp" subsystem (sftp files@<host>); this interactive
 // route is the operator console and is gated by the admin allowlist.
@@ -109,6 +115,10 @@ func IsNewsName(u string) bool { return NewsNames[strings.ToLower(u)] }
 // IsMailName reports whether the SSH username requests the AgentMail client.
 func IsMailName(u string) bool { return MailNames[strings.ToLower(u)] }
 
+// IsGopherName reports whether the SSH username requests the hedgehog gopher
+// browser (the SSH-authenticated gopher surface).
+func IsGopherName(u string) bool { return GopherNames[strings.ToLower(u)] }
+
 // IsFilesAdminName reports whether the SSH username requests the SFTP server
 // management TUI (operator-gated).
 func IsFilesAdminName(u string) bool { return FilesAdminNames[strings.ToLower(u)] }
@@ -147,7 +157,7 @@ func IsReservedName(name string) bool {
 	n := strings.ToLower(name)
 	if GuestNames[n] || PodNames[n] || JoinNames[n] || DomainNames[n] || AdminNames[n] ||
 		TorURLNames[n] || TorIRCNames[n] || TorNames[n] || IRCNames[n] || NewsNames[n] ||
-		MailNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] ||
+		MailNames[n] || GopherNames[n] || FilesAdminNames[n] || MsgNames[n] || GameNames[n] ||
 		PasswdNames[n] || systemReserved[n] {
 		return true
 	}

@@ -68,6 +68,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/files"
 	"github.com/profullstack/agentbbs/internal/forgejo"
 	"github.com/profullstack/agentbbs/internal/games"
+	"github.com/profullstack/agentbbs/internal/gopher"
 	"github.com/profullstack/agentbbs/internal/hub"
 	"github.com/profullstack/agentbbs/internal/ircpass"
 	"github.com/profullstack/agentbbs/internal/mail"
@@ -126,8 +127,9 @@ type app struct {
 	mm         *games.Matchmaker // AgentGames matchmaker (agent-vs-agent)
 	dataDir    string
 	assets     string
-	host       string // public hostname used in user-facing messages
-	newsAddr   string // loopback NNTP address the news@ reader dials
+	host       string         // public hostname used in user-facing messages
+	newsAddr   string         // loopback NNTP address the news@ reader dials
+	gopher     *gopher.Server // gopher/hedgehog engine (nil when AGENTBBS_GOPHER=0)
 }
 
 // Version is the agentbbs stack release, surfaced via `agentbbs version` and
@@ -314,6 +316,33 @@ func main() {
 		}
 	}
 
+	// Gopher (RFC 1436) + hedgehog: BBS content over gopher. The public listener
+	// on :70 serves open content (about, member homepages, public groups, public
+	// files); `ssh gopher@` runs the SSH-authenticated "hedgehog" browser that
+	// also reaches members-only selectors. See docs/gopher.md. Disable with
+	// AGENTBBS_GOPHER=0. (:70 is privileged — the operator grants the bind
+	// capability, e.g. setcap cap_net_bind_service, or maps a high port.)
+	if env("AGENTBBS_GOPHER", "1") == "1" {
+		gopherAddr := env("AGENTBBS_GOPHER_ADDR", ":70")
+		gopherHost := env("AGENTBBS_GOPHER_HOST", "gopher."+strings.TrimPrefix(host, "bbs."))
+		port := gopherAddr[strings.LastIndex(gopherAddr, ":")+1:]
+		pubGroups := news.ParseGroups(os.Getenv("AGENTBBS_GOPHER_NEWS_GROUPS"))
+		if len(pubGroups) == 0 {
+			pubGroups = []news.GroupSpec{{Name: "pfs.announce"}}
+		}
+		names := make([]string, len(pubGroups))
+		for i, g := range pubGroups {
+			names[i] = g.Name
+		}
+		a.gopher = gopher.New(st, dataDir, gopherHost, port, names, a.gopherAbout)
+		go func() {
+			log.Info("gopher listening", "addr", gopherAddr, "host", gopherHost)
+			if err := a.gopher.Serve(context.Background(), gopherAddr); err != nil {
+				log.Error("gopher listener", "err", err, "hint", "port 70 is privileged; set AGENTBBS_GOPHER_ADDR to a high port or grant cap_net_bind_service")
+			}
+		}()
+	}
+
 	addr := env("AGENTBBS_ADDR", ":2222")
 	opts := []ssh.Option{
 		wish.WithAddress(addr),
@@ -389,6 +418,8 @@ func (a *app) router() wish.Middleware {
 				a.handleTorCmd(s)
 			case auth.IsNewsName(user):
 				a.handleNews(s)
+			case auth.IsGopherName(user):
+				a.handleGopher(s)
 			case auth.IsMailName(user):
 				a.handleMail(s)
 			case auth.IsFilesAdminName(user):
@@ -1486,6 +1517,60 @@ func (a *app) runNews(s ssh.Session, name string) error {
 	}
 	log.Info("news connect", "user", name, "addr", addr)
 	return news.RunReader(s, addr, name)
+}
+
+// handleGopher drops a member into "hedgehog": the SSH-authenticated gopher
+// browser (internal/gopher). The SSH key is the credential, so the member can
+// browse members-only selectors the public :70 listener never serves. Free for
+// any registered member, like news@; needs a PTY.
+func (a *app) handleGopher(s ssh.Session) {
+	if a.gopher == nil {
+		wish.Println(s, "the gopher service is disabled on this server.")
+		_ = s.Exit(1)
+		return
+	}
+	fp := auth.Fingerprint(s.PublicKey())
+	if fp == "" {
+		wish.Println(s, "gopher@ needs your registered SSH key. New here? ssh join@"+a.host)
+		_ = s.Exit(1)
+		return
+	}
+	u, found, err := a.st.UserByFingerprint(fp)
+	if err != nil || !found {
+		wish.Println(s, "hedgehog is members-only — register first: ssh join@"+a.host+
+			"\n(the public gopher server is at gopher://gopher."+strings.TrimPrefix(a.host, "bbs.")+")")
+		_ = s.Exit(1)
+		return
+	}
+	if u.Banned {
+		wish.Println(s, "this account is suspended.")
+		_ = s.Exit(1)
+		return
+	}
+	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "gopher")
+	defer func() { _ = a.st.EndSession(sessID) }()
+
+	if err := gopher.RunBrowser(s, a.gopher, u.Name); err != nil {
+		wish.Println(s, "gopher: "+err.Error())
+		_ = s.Exit(1)
+	}
+}
+
+// gopherAbout builds the body of the gopher /about page: the brand mark, the
+// current shared MOTD, and how to connect. Passed to gopher.New so the page
+// stays in sync with the live MOTD.
+func (a *app) gopherAbout() string {
+	var b strings.Builder
+	b.WriteString(brand.Logo() + "\n\n")
+	b.WriteString("AgentBBS — a terminal BBS for humans & AI agents.\n\n")
+	b.WriteString("Connect:\n")
+	b.WriteString("  ssh " + strings.TrimPrefix(a.host, "bbs.") + "        register & explore\n")
+	b.WriteString("  ssh gopher@" + a.host + "   members-only gopher (hedgehog)\n")
+	b.WriteString("  gopher://gopher." + strings.TrimPrefix(a.host, "bbs.") + "   this public server\n")
+	if m := motd.Current(); m != "" {
+		b.WriteString("\n" + m + "\n")
+	}
+	return b.String()
 }
 
 // mailAddress is a member's email address, e.g. alice@bbs.profullstack.com.
