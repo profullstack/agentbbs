@@ -231,6 +231,9 @@ func (h *webSrv) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webSrv) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	sess, ok := h.session(w, r)
 	if !ok {
 		return
@@ -268,6 +271,9 @@ func (h *webSrv) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webSrv) handleMkdir(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	sess, ok := h.session(w, r)
 	if !ok {
 		return
@@ -286,6 +292,9 @@ func (h *webSrv) handleMkdir(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webSrv) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	sess, ok := h.session(w, r)
 	if !ok {
 		return
@@ -297,6 +306,15 @@ func (h *webSrv) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.redirectMsg(w, r, parent, "deleted "+path.Base(target))
+}
+
+func requirePost(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodPost {
+		return true
+	}
+	w.Header().Set("Allow", http.MethodPost)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
 }
 
 // session resolves the logged-in member into a filesystem session, writing an
