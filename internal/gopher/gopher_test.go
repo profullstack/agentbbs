@@ -159,6 +159,38 @@ func TestHomepageFileAndDir(t *testing.T) {
 	}
 }
 
+func TestSymlinkEscapeRefused(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+	// Create a symlink inside alice's public_html that points to secret.txt
+	// outside the member area. The selector should be refused.
+	link := filepath.Join(dataDir, "users", "alice", "public_html", "leak.txt")
+	if err := os.Symlink(filepath.Join(dataDir, "secret.txt"), link); err != nil {
+		t.Fatal(err)
+	}
+	r := srv.Resolve("/~alice/leak.txt", false, "")
+	if r.Kind == KindText && strings.Contains(r.Text, "TOP SECRET") {
+		t.Fatal("symlink escape: resolved path pointed outside member area but content was served")
+	}
+	// Symlink to a subdirectory should still work.
+	subdir := filepath.Join(dataDir, "users", "alice", "public_html", "sub")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(subdir, "hello.txt")
+	if err := os.WriteFile(inner, []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink inside the area pointing to another path within the area is fine.
+	sym := filepath.Join(dataDir, "users", "alice", "public_html", "ok-link")
+	if err := os.Symlink(inner, sym); err != nil {
+		t.Fatal(err)
+	}
+	r2 := srv.Resolve("/~alice/ok-link", false, "")
+	if r2.Kind != KindText || !strings.Contains(r2.Text, "inside") {
+		t.Fatalf("symlink within area should be allowed: got %+v", r2)
+	}
+}
+
 func TestPathTraversalRefused(t *testing.T) {
 	srv, _ := newTestServer(t)
 	for _, sel := range []string{

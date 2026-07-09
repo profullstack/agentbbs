@@ -310,6 +310,14 @@ func (s *Server) userTree(prefix, sel, area string) Response {
 	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
 		return errResp("forbidden")
 	}
+	// Symlink escape guard: resolve symlinks and re-check the real path stays
+	// within the member's area. A symlink created inside public_html that
+	// points outside would pass the lexical check but leak external content.
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		if resolved != base && !strings.HasPrefix(resolved, base+string(os.PathSeparator)) {
+			return errResp("forbidden")
+		}
+	}
 
 	info, err := os.Stat(target)
 	if err != nil {
