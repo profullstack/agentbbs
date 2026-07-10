@@ -136,6 +136,15 @@ func newMenu(user auth.User, ctx plugin.Context) *menu {
 		},
 		entry{
 			section: "BUILT-IN",
+			label:   "Shedding Snake",
+			desc:    "snake that molts — every apple sheds your skin as obstacles; walls wrap",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newShedSnake(m.user, m.ctx, m.width, m.height)
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
 			label:   "Hangman",
 			desc:    "built-in word game; high scores hit the global leaderboard",
 			run: func(m *menu) (tea.Model, tea.Cmd) {
@@ -149,6 +158,15 @@ func newMenu(user auth.User, ctx plugin.Context) *menu {
 			desc:    "global top snake scores",
 			run: func(m *menu) (tea.Model, tea.Cmd) {
 				m.child = newBoard(m.ctx, "snake")
+				return m, m.child.Init()
+			},
+		},
+		entry{
+			section: "BUILT-IN",
+			label:   "Leaderboard — Shedding Snake",
+			desc:    "global top molt counts",
+			run: func(m *menu) (tea.Model, tea.Cmd) {
+				m.child = newBoard(m.ctx, "shedsnake")
 				return m, m.child.Init()
 			},
 		},
