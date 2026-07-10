@@ -12,8 +12,10 @@ import (
 )
 
 type whitespaceBackend struct {
-	group     *nntp.Group
-	allowPost bool
+	group      *nntp.Group
+	allowPost  bool
+	articleErr error
+	postCalls  int
 }
 
 func (b *whitespaceBackend) ListGroups(max int) ([]*nntp.Group, error) {
@@ -28,6 +30,9 @@ func (b *whitespaceBackend) GetGroup(name string) (*nntp.Group, error) {
 }
 
 func (b *whitespaceBackend) GetArticle(group *nntp.Group, id string) (*nntp.Article, error) {
+	if b.articleErr != nil {
+		return nil, b.articleErr
+	}
 	return nil, ErrInvalidArticleNumber
 }
 
@@ -44,6 +49,7 @@ func (b *whitespaceBackend) Authenticate(user, pass string) (Backend, error) {
 func (b *whitespaceBackend) AllowPost() bool { return b.allowPost }
 
 func (b *whitespaceBackend) Post(article *nntp.Article) error {
+	b.postCalls++
 	return errors.New("posting disabled")
 }
 
@@ -125,5 +131,43 @@ func TestIHaveWithoutMessageIDReturnsSyntaxError(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("server did not close after QUIT")
+	}
+}
+
+func TestIHaveStopsWhenDuplicateCheckFails(t *testing.T) {
+	backend := &whitespaceBackend{
+		group:      &nntp.Group{Name: "pfs.general", Posting: nntp.PostingPermitted},
+		allowPost:  true,
+		articleErr: errors.New("backend unavailable"),
+	}
+	server := NewServer(backend)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		server.Process(serverConn)
+		close(done)
+	}()
+
+	client := textproto.NewConn(clientConn)
+	defer client.Close()
+	if line, err := client.ReadLine(); err != nil || !strings.HasPrefix(line, "200 ") {
+		t.Fatalf("greeting = %q, %v", line, err)
+	}
+	if err := client.PrintfLine("IHAVE <new@example.test>"); err != nil {
+		t.Fatalf("send IHAVE: %v", err)
+	}
+	if line, err := client.ReadLine(); err == nil {
+		t.Fatalf("IHAVE duplicate-check failure returned %q; want connection close", line)
+	}
+	if backend.postCalls != 0 {
+		t.Fatalf("Post called %d times after duplicate-check failure; want 0", backend.postCalls)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not close after duplicate-check failure")
 	}
 }

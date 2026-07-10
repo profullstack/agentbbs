@@ -17,7 +17,6 @@ var (
 	nSel  = lipgloss.NewStyle().Foreground(lipgloss.Color("#0b1020")).Background(ui.Cyan)
 	nMeta = ui.Dim
 	nFrom = lipgloss.NewStyle().Foreground(ui.Green)
-	nErr  = ui.Danger
 )
 
 // RunReader connects the member to the loopback NNTP server and drives the
