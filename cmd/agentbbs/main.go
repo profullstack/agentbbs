@@ -73,6 +73,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/ircpass"
 	"github.com/profullstack/agentbbs/internal/mail"
 	"github.com/profullstack/agentbbs/internal/mailbox"
+	"github.com/profullstack/agentbbs/internal/mailclients"
 	"github.com/profullstack/agentbbs/internal/mailu"
 	"github.com/profullstack/agentbbs/internal/motd"
 	"github.com/profullstack/agentbbs/internal/news"
@@ -619,6 +620,26 @@ func (a *app) sessionApps(s ssh.Session, su store.User, guest bool) []hub.Sessio
 			return mailbox.RunReader(s, c)
 		}},
 	})
+
+	// Alternative mail clients: himalaya and meli, pointed at the same mailbox as
+	// the built-in AgentMail reader. Same lock rules as Mail, plus a lock when the
+	// binary isn't installed on this host so the entry explains itself.
+	for _, mc := range []mailclients.Client{mailclients.Himalaya, mailclients.Meli} {
+		mc := mc
+		lock := mailLock
+		if lock == "" && !mc.Available() {
+			lock = mc.Name() + " is not installed on this host"
+		}
+		apps = append(apps, hub.SessionApp{
+			Title:       "Mail · " + mc.Title(),
+			Description: mc.Name() + " on your " + a.mailAddress(su.Name) + " mailbox",
+			Locked:      lock,
+			Cmd: sessionExec{run: func() error {
+				_ = a.ensureMailbox(su)
+				return mc.Run(s, a.mailBackendFor(su))
+			}},
+		})
+	}
 
 	// Tor — a Founding Lifetime Member perk: a torsocks shell in the pod.
 	torLock := ""
@@ -1668,6 +1689,51 @@ func (a *app) mailClientFor(su store.User) (*mailbox.Client, error) {
 	return mailbox.NewClient(tr, mailbox.Identity{Name: su.Name, Paid: su.Premium}, a.mailDomain, 50), nil
 }
 
+// mailBackendFor resolves the same IMAP/SMTP connection mailClientFor uses, but
+// as a plain mailclients.Backend so third-party clients (himalaya, meli) can be
+// pointed at the member's mailbox. It reads the identical env so all three
+// clients behave the same; the master secret stays on the host (these clients
+// run host-side, never in a pod — see internal/mailclients).
+func (a *app) mailBackendFor(su store.User) mailclients.Backend {
+	login := a.mailAddress(su.Name)
+	if master := os.Getenv("AGENTBBS_MAIL_MASTER_USER"); master != "" {
+		login = a.mailAddress(su.Name) + "*" + master
+	}
+	imapHost, imapPort := splitHostPort(env("AGENTBBS_MAIL_IMAP_ADDR", a.mailHost+":993"), 993)
+	smtpHost, smtpPort := splitHostPort(env("AGENTBBS_MAIL_SMTP_ADDR", "127.0.0.1:25"), 25)
+	return mailclients.Backend{
+		Name:          su.Name,
+		Address:       a.mailAddress(su.Name),
+		DisplayName:   su.Name,
+		IMAPHost:      imapHost,
+		IMAPPort:      imapPort,
+		IMAPPlaintext: os.Getenv("AGENTBBS_MAIL_IMAP_PLAINTEXT") == "1",
+		SMTPHost:      smtpHost,
+		SMTPPort:      smtpPort,
+		// The default submission path is the trusted, unauthenticated loopback
+		// relay (127.0.0.1:25) the gateway uses — no STARTTLS. Operators pointing
+		// at a real submission port should set AGENTBBS_*_CONFIG_TEMPLATE.
+		SMTPPlaintext: os.Getenv("AGENTBBS_MAIL_SMTP_STARTTLS") != "1",
+		Login:         login,
+		Password:      os.Getenv("AGENTBBS_MAIL_MASTER_PASS"),
+	}
+}
+
+// splitHostPort splits a "host:port" into its parts, falling back to def when no
+// port is present or it doesn't parse. Unlike net.SplitHostPort it tolerates a
+// bare host.
+func splitHostPort(addr string, def int) (string, int) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, def
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return host, def
+	}
+	return host, port
+}
+
 // handleMail routes a Founding Lifetime member into AgentMail: an interactive
 // TUI when a PTY is present and no command is given, or the JSON bot mode
 // (ssh mail@host <cmd>, or no PTY) for agents.
@@ -1703,6 +1769,30 @@ func (a *app) handleMail(s ssh.Session) {
 	_ = a.ensureMailbox(u)
 	sessID, _ := a.st.RecordSession(u.ID, s.User(), remoteIP(s), "mail")
 	defer func() { _ = a.st.EndSession(sessID) }()
+
+	// `ssh -t mail@host himalaya|meli` opens an alternative client instead of the
+	// built-in AgentMail reader. Requires a PTY (both are interactive).
+	if args := s.Command(); len(args) > 0 {
+		var mc mailclients.Client
+		switch strings.ToLower(args[0]) {
+		case "himalaya":
+			mc = mailclients.Himalaya
+		case "meli":
+			mc = mailclients.Meli
+		}
+		if mc.Name() != "" {
+			if _, _, hasPty := s.Pty(); !hasPty {
+				wish.Println(s, mc.Name()+" needs an interactive terminal — connect with: ssh -t "+mc.Name()+"@... (use: ssh -t mail@"+a.host+" "+mc.Name()+")")
+				_ = s.Exit(1)
+				return
+			}
+			if err := mc.Run(s, a.mailBackendFor(u)); err != nil {
+				wish.Println(s, "mail: "+err.Error())
+				_ = s.Exit(1)
+			}
+			return
+		}
+	}
 
 	c, err := a.mailClientFor(u)
 	if err != nil {
