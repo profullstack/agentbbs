@@ -181,6 +181,23 @@ func TestPathTraversalRefused(t *testing.T) {
 	}
 }
 
+func TestSymlinkEscapeRefused(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+	home := filepath.Join(dataDir, "users", "alice", "public_html")
+	link := filepath.Join(home, "leak.txt")
+	if err := os.Symlink(filepath.Join(dataDir, "secret.txt"), link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	r := srv.Resolve("/~alice/leak.txt", false, "")
+	if r.Kind != KindError {
+		t.Fatalf("symlink escape should be refused, got %v", r.Kind)
+	}
+	if strings.Contains(r.Text, "TOP SECRET") || strings.Contains(string(r.Data), "TOP SECRET") {
+		t.Fatalf("symlink escape leaked the secret file: %+v", r)
+	}
+}
+
 func TestNewsPublicVsAuthed(t *testing.T) {
 	srv, _ := newTestServer(t)
 
