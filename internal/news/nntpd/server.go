@@ -88,7 +88,6 @@ type Server struct {
 	// ErrLog, when non-nil, receives connection-level errors. Protocol verbs
 	// are never logged (a public server should not log every command).
 	ErrLog *log.Logger
-	group  *nntp.Group
 }
 
 // NewServer builds a server bound to a backend.
@@ -371,6 +370,9 @@ func handleIHave(args []string, s *session, c *textproto.Conn) error {
 		return ErrSyntax
 	}
 	article, err := s.backend.GetArticle(nil, args[0])
+	if err != nil && err != ErrInvalidMessageID && err != ErrInvalidArticleNumber {
+		return err
+	}
 	if article != nil {
 		return ErrNotWanted
 	}
