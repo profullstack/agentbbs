@@ -3,10 +3,13 @@ package files
 import (
 	"bytes"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -121,6 +124,41 @@ func TestWebRoundTrip(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if strings.Contains(rr.Body.String(), "hello.txt") {
 		t.Fatal("file still present after delete")
+	}
+}
+
+func TestWebDownloadEncodesUnicodeFilename(t *testing.T) {
+	svc, _, u := newTestService(t)
+	h := svc.WebHandler(WebConfig{
+		Title: "files.test",
+		Authenticate: func(user, pass string) (store.User, bool, error) {
+			return u, user == "alice" && pass == "secret", nil
+		},
+	})
+	cookie := loginCookie(t, h)
+	name := "résumé.txt"
+	if _, _, err := svc.OpenFor(u.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.privRoot(u.Name), name), []byte("complete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/download?path="+url.QueryEscape("/me/"+name), nil)
+	req.AddCookie(cookie)
+	h.ServeHTTP(rr, req)
+
+	disposition := rr.Header().Get("Content-Disposition")
+	if !strings.Contains(disposition, "filename*=") {
+		t.Fatalf("Content-Disposition should encode a Unicode filename: %q", disposition)
+	}
+	mediaType, params, err := mime.ParseMediaType(disposition)
+	if err != nil {
+		t.Fatalf("invalid Content-Disposition: %v", err)
+	}
+	if mediaType != "attachment" || params["filename"] != name {
+		t.Fatalf("Content-Disposition filename: got %q, want %q", params["filename"], name)
 	}
 }
 
