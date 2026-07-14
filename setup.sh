@@ -591,11 +591,15 @@ SSHD
 ufw allow "${ADMIN_SSH_PORT}/tcp" >/dev/null
 sshd -t || die "sshd config test failed; not restarting (you are not locked out)"
 
-# Ubuntu 22.10+/24.04 socket-activate sshd via ssh.socket, which OWNS the listen
-# port and ignores sshd_config's Port. Override the socket's ListenStream so the
-# admin port actually moves; otherwise (classic sshd) just restart the service.
-if systemctl cat ssh.socket >/dev/null 2>&1; then
-  log "ssh is socket-activated (Ubuntu 24.04) — moving the socket to :${ADMIN_SSH_PORT}"
+# Ubuntu 22.10+/24.04 CAN socket-activate sshd via ssh.socket, which OWNS the
+# listen port and ignores sshd_config's Port. But the ssh.socket unit *file*
+# exists on every modern box even when the real listener is the standalone
+# ssh.service (the default on DigitalOcean images) — so `systemctl cat` is NOT a
+# reliable signal. Decide by what systemd reports as active/enabled instead.
+admin_ssh_up() { ss -tlnH "sport = :${ADMIN_SSH_PORT}" 2>/dev/null | grep -q .; }
+
+if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+  log "ssh is socket-activated — moving the socket to :${ADMIN_SSH_PORT}"
   install -d -m 0755 /etc/systemd/system/ssh.socket.d
   cat > /etc/systemd/system/ssh.socket.d/10-agentbbs-port.conf <<SOCK
 [Socket]
@@ -603,17 +607,36 @@ ListenStream=
 ListenStream=${ADMIN_SSH_PORT}
 SOCK
   systemctl daemon-reload
+  # A standalone ssh.service would fight the socket for the port; in socket mode
+  # sshd is spawned per-connection, so stop the standalone daemon first.
+  systemctl stop ssh.service 2>/dev/null || true
   systemctl restart ssh.socket
 else
   systemctl restart ssh 2>/dev/null || systemctl restart sshd
 fi
+
 # Verify the admin port is actually listening before we free :22.
-for _ in 1 2 3 4 5 6 7 8; do
-  ss -tlnp 2>/dev/null | grep -q ":${ADMIN_SSH_PORT} " && break
-  sleep 1
-done
-ss -tlnp 2>/dev/null | grep -q ":${ADMIN_SSH_PORT} " \
-  || die "admin sshd is NOT listening on ${ADMIN_SSH_PORT} — aborting before touching :22. Your current session is still up; fix sshd and re-run."
+for _ in 1 2 3 4 5 6 7 8; do admin_ssh_up && break; sleep 1; done
+
+# Fallback: if the primary path didn't bind (mode misdetected, or a stale socket
+# override left the standalone daemon in charge), try the other restart before
+# giving up — moving admin ssh must succeed either way.
+if ! admin_ssh_up; then
+  log "admin ssh not up via primary path — trying the alternate restart"
+  if systemctl cat ssh.socket >/dev/null 2>&1; then
+    systemctl restart ssh.socket 2>/dev/null || true
+  fi
+  systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8; do admin_ssh_up && break; sleep 1; done
+fi
+
+if ! admin_ssh_up; then
+  log "diagnostics — ssh listeners and unit state follow:"
+  ss -tlnp 2>/dev/null | grep -iE "ssh|:${ADMIN_SSH_PORT}\b" || true
+  systemctl --no-pager status ssh.socket ssh.service 2>/dev/null | sed -n '1,30p' || true
+  journalctl -u ssh.socket -u ssh.service -n 25 --no-pager 2>/dev/null || true
+  die "admin sshd is NOT listening on ${ADMIN_SSH_PORT} — aborting before touching :22. Your current session is still up; fix sshd and re-run."
+fi
 
 # ---- 9. Caddy front end (HTTPS + tilde /~user homepages) --------------------
 if ! command -v caddy >/dev/null; then
