@@ -115,7 +115,11 @@ func (h *webSrv) clear(w http.ResponseWriter, r *http.Request) {
 }
 
 func secureReq(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	if r.TLS != nil {
+		return true
+	}
+	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
 func randHex(n int) string {

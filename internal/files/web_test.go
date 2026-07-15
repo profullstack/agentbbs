@@ -61,6 +61,28 @@ func TestWebRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestSecureReqUsesFirstForwardedProto(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		proto  string
+		secure bool
+	}{
+		{name: "https", proto: "https", secure: true},
+		{name: "proxy chain", proto: "https, http", secure: true},
+		{name: "case and whitespace", proto: " HTTPS , http", secure: true},
+		{name: "http", proto: "http", secure: false},
+		{name: "untrusted later value", proto: "http, https", secure: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("X-Forwarded-Proto", tc.proto)
+			if got := secureReq(req); got != tc.secure {
+				t.Fatalf("secureReq() = %v, want %v for %q", got, tc.secure, tc.proto)
+			}
+		})
+	}
+}
+
 func TestWebRoundTrip(t *testing.T) {
 	h, _ := webTestHandler(t)
 
