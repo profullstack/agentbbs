@@ -45,12 +45,12 @@ func ConfigFromEnv() Config {
 		c.RedeemURL = v
 	}
 	if v := os.Getenv("AGENTBBS_QRYPT_INVITE_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			c.TTL = d
 		}
 	}
 	if v := os.Getenv("AGENTBBS_QRYPT_INVITE_QUOTA"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			c.Quota = n
 		}
 	}
