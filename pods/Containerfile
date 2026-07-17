@@ -11,7 +11,7 @@
 # BYO key: nothing here carries credentials. A member exports their own
 # ANTHROPIC_API_KEY / OPENAI_API_KEY (or runs the tools' login flow); the keys
 # live in their persisted home, never in the image.
-FROM docker.io/library/ubuntu:24.04
+FROM docker.io/library/ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
