@@ -1856,6 +1856,10 @@ func validIRCServer(s string) bool {
 				return false
 			}
 		}
+		portNum, err := strconv.Atoi(port)
+		if err != nil || portNum < 1 || portNum > 65535 {
+			return false
+		}
 	}
 	if host == "" || len(host) > 255 {
 		return false
