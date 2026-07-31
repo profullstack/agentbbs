@@ -99,10 +99,10 @@ func env(k, def string) string {
 	return def
 }
 
-// envInt reads an integer environment variable, falling back to def.
+// envInt reads a positive integer environment variable, falling back to def.
 func envInt(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
 	}
