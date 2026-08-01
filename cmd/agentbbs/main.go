@@ -753,6 +753,10 @@ func (a *app) handleJoin(s ssh.Session) {
 		wish.Fatalln(s, "registration error: "+err.Error())
 		return
 	}
+	// Whether this session actually onboarded anyone: a brand-new key here, or an
+	// account that finishes email verification below. Everything with a credential
+	// side effect keys off this rather than off reaching join@ at all.
+	onboarding := !found
 	if !found {
 		// New key: show the acceptable-use terms and require acceptance before
 		// creating the account, then let the visitor pick their own handle (a
@@ -783,6 +787,7 @@ func (a *app) handleJoin(s ssh.Session) {
 			return
 		}
 		a.notifySignup(u)
+		onboarding = true
 	}
 
 	// Every verified member gets a homepage at https://<host>/~<name> and a
@@ -791,11 +796,26 @@ func (a *app) handleJoin(s ssh.Session) {
 	_ = a.ensureMailbox(u)
 	// Give them a webmail password so free members can log into webmail. The
 	// in-BBS reader uses the gateway master user and needs no password, but
-	// Roundcube does. (Re)set on each join@; they can change it in webmail.
-	webmailPW := a.setWebmailPassword(u)
+	// Roundcube does.
+	//
+	// Only while ONBOARDING. This used to run on every join@, which quietly broke
+	// returning members: join@ is the address people remember, so typing it again
+	// out of habit rotated a live Roundcube password: the replacement scrolled past
+	// in this output once, the old one was already dead, and nothing said a
+	// credential had changed. Rotating a working password must never be a side
+	// effect of saying hello -- passwd@ is the deliberate way to change one, and it
+	// is already key-gated, so it doubles as the forgot-password path.
+	var webmailPW string
+	if onboarding {
+		webmailPW = a.setWebmailPassword(u)
+	}
 
+	lead := "  You're in. One login gets you everything — no other servers to ssh into:"
+	if !onboarding {
+		lead = "  You're already a member — nothing changed. One login gets you everything:"
+	}
 	includes := []string{
-		"  You're in. One login gets you everything — no other servers to ssh into:",
+		lead,
 		"",
 		"    ssh " + u.Name + "@" + a.host,
 		"",
@@ -806,7 +826,8 @@ func (a *app) handleJoin(s ssh.Session) {
 		"    • the arcade & games",
 		"    • your homepage   https://" + a.host + "/~" + u.Name,
 	}
-	if a.webmailURL != "" && webmailPW != "" {
+	switch {
+	case a.webmailURL != "" && webmailPW != "":
 		includes = append(includes,
 			"",
 			"  Webmail (read your mail in a browser):",
@@ -814,8 +835,27 @@ func (a *app) handleJoin(s ssh.Session) {
 			"    • login      "+a.mailAddress(u.Name),
 			"    • password   "+webmailPW+"   (change it in webmail Settings)",
 		)
-	} else if a.webmailURL != "" {
-		includes = append(includes, "    • webmail         "+a.webmailURL)
+	case a.webmailURL != "" && !onboarding:
+		// Say the password is untouched. A returning member who came here looking
+		// for their credentials needs to know this visit did not change them, and
+		// where to go if they have lost them.
+		includes = append(includes,
+			"",
+			"  Webmail (read your mail in a browser):",
+			"    • url        "+a.webmailURL,
+			"    • login      "+a.mailAddress(u.Name),
+			"    • password   unchanged — forgot it? ssh passwd@"+a.host,
+		)
+	case a.webmailURL != "":
+		// Onboarding, but minting the password failed (Mailu down or unconfigured).
+		// Don't imply one is waiting for them -- point at the way to set one.
+		includes = append(includes,
+			"",
+			"  Webmail (read your mail in a browser):",
+			"    • url        "+a.webmailURL,
+			"    • login      "+a.mailAddress(u.Name),
+			"    • password   not set yet — set one: ssh passwd@"+a.host,
+		)
 	}
 	wish.Println(s, "\n"+strings.Join(includes, "\n"))
 
