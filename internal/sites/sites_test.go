@@ -111,6 +111,31 @@ func TestManagerAddRemoveSyncAsk(t *testing.T) {
 	}
 }
 
+func TestSyncRemovesStaleDomainEntries(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	m, err := NewManager(st, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, "domains", "stale.example.com")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Errorf("expected stale domain entry removed, got err=%v", err)
+	}
+}
+
 func TestAskUserSubdomain(t *testing.T) {
 	t.Setenv("AGENTBBS_HOST", "bbs.profullstack.com")
 	dir := t.TempDir()
