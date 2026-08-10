@@ -100,6 +100,22 @@ func (m *Manager) Sync() error {
 	if err != nil {
 		return err
 	}
+	wanted := make(map[string]struct{}, len(all))
+	for _, dm := range all {
+		wanted[dm.Domain] = struct{}{}
+	}
+	entries, err := os.ReadDir(m.domDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if _, ok := wanted[entry.Name()]; ok {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(m.domDir, entry.Name())); err != nil {
+			return err
+		}
+	}
 	for _, dm := range all {
 		if err := m.link(dm.Domain, dm.Username); err != nil {
 			return err
