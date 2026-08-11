@@ -229,7 +229,10 @@ func (t *imapTransport) Send(_ context.Context, from string, d Draft) (SendResul
 	}
 	// Best-effort copy to Sent so the message shows in the member's mailbox.
 	t.mu.Lock()
-	_, _ = t.c.Append(Sent, int64(len(msg)), nil).Wait() // ignore APPEND errors
+	appendCmd := t.c.Append(Sent, int64(len(msg)), nil)
+	_, _ = appendCmd.Write(msg)
+	_ = appendCmd.Close()
+	_, _ = appendCmd.Wait()
 	t.mu.Unlock()
 	return SendResult{MessageID: msgID}, nil
 }
