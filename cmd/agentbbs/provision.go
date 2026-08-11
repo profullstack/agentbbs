@@ -34,6 +34,10 @@ func provisionUser(st store.Store, args []string) {
 	pubkeyFile := fs.String("pubkey-file", "", "read the SSH public key from this file")
 	kind := fs.String("kind", string(auth.Member), "account kind: member | agent")
 	fs.Parse(args)
+	accountKind, ok := parseProvisionKind(*kind)
+	if !ok {
+		fail(`invalid --kind: must be "member" or "agent"`)
+	}
 
 	// Normalize with the same rules the hub uses for self-service joins, so
 	// store-provisioned handles are indistinguishable from join@ ones.
@@ -67,7 +71,7 @@ func provisionUser(st store.Store, args []string) {
 		fail(fmt.Sprintf("this key already belongs to member %q (fp %s)", existing.Name, fp))
 	}
 
-	u, err := st.EnsureUser(handle, *kind, fp)
+	u, err := st.EnsureUser(handle, string(accountKind), fp)
 	if err != nil {
 		if errors.Is(err, store.ErrKeyMismatch) {
 			fail(fmt.Sprintf("handle %q is already registered with a different key", handle))
@@ -82,6 +86,17 @@ func provisionUser(st store.Store, args []string) {
 		"fingerprint": fp,
 		"store_id":    u.ID,
 	})
+}
+
+func parseProvisionKind(value string) (auth.Kind, bool) {
+	switch auth.Kind(strings.ToLower(strings.TrimSpace(value))) {
+	case auth.Member:
+		return auth.Member, true
+	case auth.Agent:
+		return auth.Agent, true
+	default:
+		return "", false
+	}
 }
 
 func fail(msg string) {
