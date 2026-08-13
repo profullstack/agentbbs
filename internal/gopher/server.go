@@ -262,7 +262,7 @@ func (s *Server) newsArticles(group string) Response {
 }
 
 // filesRoot lists every non-banned member, each linking to their public files
-// area (<data>/users/<name>/public), mirroring the anonymous web files surface.
+// area (<data>/files/public/<name>), mirroring the anonymous web files surface.
 func (s *Server) filesRoot() Response {
 	users, err := s.c.ListUsers(1000)
 	if err != nil {
@@ -287,7 +287,8 @@ func (s *Server) filesRoot() Response {
 // userTree serves a member's per-user area (public_html homepage, or the public
 // files area) as gopher content. prefix is the selector root ("" for homepages,
 // "files" for the files area); sel is the remainder after the prefix, of the form
-// "~name[/subpath]". area is the on-disk subdirectory under <data>/users/<name>.
+// "~name[/subpath]". Homepages live under <data>/users/<name>/<area>; public
+// files share the SFTP service's <data>/files/public/<name> storage root.
 //
 // The subpath is confined to the member's area: it is cleaned as an absolute
 // path (so any ".." that would escape is neutralised) and the resolved target is
@@ -301,6 +302,9 @@ func (s *Server) userTree(prefix, sel, area string) Response {
 		return errResp("bad member name")
 	}
 	base := filepath.Join(s.dataDir, "users", name, area)
+	if prefix == "files" {
+		base = filepath.Join(s.dataDir, "files", "public", name)
+	}
 
 	// Confine sub to base. Cleaning as an absolute path drops any leading ".."
 	// components; the HasPrefix re-check is belt-and-suspenders against edge
