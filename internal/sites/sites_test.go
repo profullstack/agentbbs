@@ -111,6 +111,37 @@ func TestManagerAddRemoveSyncAsk(t *testing.T) {
 	}
 }
 
+func TestManagerAddRollsBackNewMappingWhenLinkCreationFails(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	m, err := NewManager(st, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain := "blocked.example.com"
+	blocked := filepath.Join(dir, "domains", domain)
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "keep"), []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Add(domain, "alice"); err == nil {
+		t.Fatal("Add succeeded despite an occupied domain link path")
+	}
+	if owner, ok, err := st.DomainUser(domain); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatalf("failed Add left domain mapped to %q", owner)
+	}
+}
+
 func TestSyncRemovesStaleDomainEntries(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "test.db"))
