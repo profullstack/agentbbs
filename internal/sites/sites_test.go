@@ -142,6 +142,42 @@ func TestManagerAddRollsBackNewMappingWhenLinkCreationFails(t *testing.T) {
 	}
 }
 
+func TestManagerAddPreservesExistingMappingWhenLinkRepairFails(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	m, err := NewManager(st, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain := "blocked.example.com"
+	if created, err := st.MapDomain(domain, "alice"); err != nil {
+		t.Fatal(err)
+	} else if !created {
+		t.Fatal("expected a new domain mapping")
+	}
+	blocked := filepath.Join(dir, "domains", domain)
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "keep"), []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Add(domain, "alice"); err == nil {
+		t.Fatal("Add succeeded despite an occupied domain link path")
+	}
+	if owner, ok, err := st.DomainUser(domain); err != nil {
+		t.Fatal(err)
+	} else if !ok || owner != "alice" {
+		t.Fatalf("existing mapping changed after failed repair: owner=%q ok=%v", owner, ok)
+	}
+}
+
 func TestSyncRemovesStaleDomainEntries(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "test.db"))
