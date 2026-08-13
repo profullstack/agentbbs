@@ -159,6 +159,35 @@ func TestHomepageFileAndDir(t *testing.T) {
 	}
 }
 
+func TestPublicFilesUseSFTPStorageRoot(t *testing.T) {
+	srv, dataDir := newTestServer(t)
+
+	publicRoot := filepath.Join(dataDir, "files", "public", "alice")
+	mustMkdir(t, publicRoot)
+	mustWrite(t, filepath.Join(publicRoot, "shared.txt"), "uploaded through sftp")
+
+	legacyRoot := filepath.Join(dataDir, "users", "alice", "public")
+	mustMkdir(t, legacyRoot)
+	mustWrite(t, filepath.Join(legacyRoot, "legacy.txt"), "stale location")
+
+	dir := srv.Resolve("/files/~alice", false, "")
+	if dir.Kind != KindMenu {
+		t.Fatalf("public files root should be a dir menu, got %v", dir.Kind)
+	}
+	wire := string(dir.Wire())
+	if !strings.Contains(wire, "/files/~alice/shared.txt") {
+		t.Errorf("public files should list SFTP uploads:\n%s", wire)
+	}
+	if strings.Contains(wire, "legacy.txt") {
+		t.Errorf("public files must not read the legacy user directory:\n%s", wire)
+	}
+
+	file := srv.Resolve("/files/~alice/shared.txt", false, "")
+	if file.Kind != KindText || file.Text != "uploaded through sftp" {
+		t.Errorf("SFTP public file should be served as text: %+v", file)
+	}
+}
+
 func TestPathTraversalRefused(t *testing.T) {
 	srv, _ := newTestServer(t)
 	for _, sel := range []string{
