@@ -70,6 +70,9 @@ func (a *app) handleGame(s ssh.Session) {
 	case errors.Is(err, games.ErrNoOpponent):
 		_ = conn.Send(errEnvelope("no opponent found — try again later"))
 		_ = s.Exit(1)
+	case errors.Is(err, games.ErrAlreadyQueued):
+		_ = conn.Send(errEnvelope("this account is already queued for that game"))
+		_ = s.Exit(1)
 	case err != nil && !errors.Is(err, games.ErrUnknownGame):
 		// Unknown-game is already handled above; anything else is a wait abort
 		// (e.g. the agent disconnected) and needs no message.
