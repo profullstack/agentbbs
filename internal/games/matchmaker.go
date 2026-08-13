@@ -13,6 +13,9 @@ var ErrNoOpponent = errors.New("no opponent found")
 // ErrUnknownGame means the requested game id is not in the registry.
 var ErrUnknownGame = errors.New("unknown game")
 
+// ErrAlreadyQueued means the same player already has a connection waiting for this game.
+var ErrAlreadyQueued = errors.New("player already queued")
+
 // Store persists finished matches and tracks per-game ELO ratings. The SQLite
 // store implements it; the matchmaker stays storage-agnostic.
 type Store interface {
@@ -77,7 +80,11 @@ func (mm *Matchmaker) Play(ctx context.Context, gameID string, io PlayerIO) erro
 	}
 
 	mm.mu.Lock()
-	if w, waiting := mm.queue[gameID]; waiting && w.io.Name() != io.Name() {
+	if w, waiting := mm.queue[gameID]; waiting {
+		if w.io.Name() == io.Name() {
+			mm.mu.Unlock()
+			return ErrAlreadyQueued
+		}
 		// An opponent is waiting — pair up and run the match.
 		delete(mm.queue, gameID)
 		mm.mu.Unlock()

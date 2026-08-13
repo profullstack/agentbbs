@@ -2,6 +2,7 @@ package games
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -131,5 +132,44 @@ func TestMatchmakerUnknownGame(t *testing.T) {
 	mm := NewMatchmaker(Catalog(), nil, time.Second, time.Second)
 	if err := mm.Play(context.Background(), "nope", &firstLegalPlayer{name: "x"}); err != ErrUnknownGame {
 		t.Fatalf("want ErrUnknownGame, got %v", err)
+	}
+}
+
+func TestMatchmakerRejectsDuplicateWaiter(t *testing.T) {
+	mm := NewMatchmaker(Catalog(), nil, time.Second, time.Minute)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- mm.Play(firstCtx, "ttt", &firstLegalPlayer{name: "same-agent"})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mm.mu.Lock()
+		queued := mm.queue["ttt"] != nil
+		mm.mu.Unlock()
+		if queued {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first player never entered the queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	duplicateCtx, cancelDuplicate := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelDuplicate()
+	if err := mm.Play(duplicateCtx, "ttt", &firstLegalPlayer{name: "same-agent"}); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("duplicate Play error = %v, want immediate already-queued rejection", err)
+	}
+
+	cancelFirst()
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first Play error = %v, want context.Canceled", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("first player remained blocked after its context was canceled")
 	}
 }

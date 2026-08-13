@@ -77,8 +77,12 @@ func (a *app) handleGameWS(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = a.st.EndSession(sessID) }()
 
 	_ = p.Send(map[string]any{"type": "queued", "game": gameID})
-	if err := a.mm.Play(context.Background(), gameID, p); errors.Is(err, games.ErrNoOpponent) {
+	err = a.mm.Play(context.Background(), gameID, p)
+	if errors.Is(err, games.ErrNoOpponent) {
 		_ = p.Send(errEnvelope("no opponent found — try again later"))
+	}
+	if errors.Is(err, games.ErrAlreadyQueued) {
+		_ = p.Send(errEnvelope("this account is already queued for that game"))
 	}
 }
 
