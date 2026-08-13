@@ -72,10 +72,19 @@ func (m *Manager) Add(domain, username string) (string, error) {
 	if !Valid(domain) {
 		return "", ErrInvalidDomain
 	}
-	if err := m.st.MapDomain(domain, username); err != nil {
+	created, err := m.st.MapDomain(domain, username)
+	if err != nil {
 		return domain, err
 	}
-	return domain, m.link(domain, username)
+	if err := m.link(domain, username); err != nil {
+		if created {
+			if rollbackErr := m.st.UnmapDomain(domain, username); rollbackErr != nil {
+				return domain, errors.Join(err, rollbackErr)
+			}
+		}
+		return domain, err
+	}
+	return domain, nil
 }
 
 // Remove unmaps a domain owned by username (DB row + symlink).

@@ -136,9 +136,10 @@ type Store interface {
 	OnlineUsers() (map[string]bool, error)
 
 	// Custom domains mapped to a member's homepage (public_html).
-	// MapDomain binds domain→username, returning ErrDomainTaken if it is
-	// already claimed by someone else (re-binding to the same owner is a no-op).
-	MapDomain(domain, username string) error
+	// MapDomain binds domain→username, returning whether a new row was created.
+	// It returns ErrDomainTaken if the domain is already claimed by someone else;
+	// re-binding to the same owner is a no-op and returns false.
+	MapDomain(domain, username string) (bool, error)
 	UnmapDomain(domain, username string) error
 	DomainUser(domain string) (string, bool, error)
 	DomainsForUser(username string) ([]string, error)
@@ -870,20 +871,20 @@ func (s *sqliteStore) OnlineUsers() (map[string]bool, error) {
 	return online, rows.Err()
 }
 
-func (s *sqliteStore) MapDomain(domain, username string) error {
+func (s *sqliteStore) MapDomain(domain, username string) (bool, error) {
 	var owner string
 	err := s.db.QueryRow(`SELECT username FROM domains WHERE domain = ?`, domain).Scan(&owner)
 	switch {
 	case err == nil:
 		if owner != username {
-			return ErrDomainTaken
+			return false, ErrDomainTaken
 		}
-		return nil // already ours
+		return false, nil // already ours
 	case err != sql.ErrNoRows:
-		return err
+		return false, err
 	}
 	_, err = s.db.Exec(`INSERT INTO domains (domain, username) VALUES (?,?)`, domain, username)
-	return err
+	return err == nil, err
 }
 
 func (s *sqliteStore) UnmapDomain(domain, username string) error {
