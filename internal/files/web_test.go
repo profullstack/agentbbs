@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -392,5 +393,35 @@ func TestWebPublicReadOnlyByDefault(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("public upload: want redirect, got %d", rr.Code)
+	}
+}
+
+func TestWebOpenAccessDescriptor(t *testing.T) {
+	h, _ := webTestHandler(t)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, OpenAccessPath, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type: got %q", ct)
+	}
+	if cc := rr.Header().Get("Cache-Control"); cc != "public, max-age=300" {
+		t.Fatalf("cache-control: got %q", cc)
+	}
+	var doc struct {
+		OpenAccess string `json:"openaccess"`
+		URL        string `json:"url"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("descriptor is not JSON: %v", err)
+	}
+	if doc.OpenAccess == "" || doc.URL == "" {
+		t.Fatalf("descriptor missing openaccess/url: %s", rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, OpenAccessPath, nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST: want 405, got %d", rr.Code)
 	}
 }

@@ -2,6 +2,7 @@ package files
 
 import (
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -71,7 +72,38 @@ func (s *Service) WebHandler(cfg WebConfig) http.Handler {
 	mux.HandleFunc("/mkdir", h.handleMkdir)
 	mux.HandleFunc("/delete", h.handleDelete)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.Handle(OpenAccessPath, OpenAccessHandler())
 	return mux
+}
+
+// OpenAccessPath is the well-known location of the OpenAccess descriptor
+// (https://logicsrc.com/openaccess). Hubs such as openaccess.logicsrc.com fetch
+// it to list the BBS and to link accounts with OAuth 2.1 + PKCE.
+const OpenAccessPath = "/.well-known/openaccess.json"
+
+// openAccessDescriptor is the static descriptor served verbatim. It names the
+// public signing key (JWKS), the redirect URI and the hubs the BBS trusts.
+//
+//go:embed openaccess.json
+var openAccessDescriptor []byte
+
+// OpenAccessHandler serves the embedded OpenAccess descriptor as JSON with a
+// short public cache. It needs no session: hubs fetch it anonymously.
+func OpenAccessHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Content-Length", strconv.Itoa(len(openAccessDescriptor)))
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(openAccessDescriptor)
+	})
 }
 
 // --- session helpers --------------------------------------------------------
