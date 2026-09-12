@@ -774,6 +774,12 @@ ${DOMAIN} {
 		reverse_proxy http://${HTTP_ADDR}
 	}
 
+	# OpenAccess descriptor (https://logicsrc.com/openaccess): lets hubs list
+	# the BBS and link accounts with OAuth 2.1 + PKCE. Static JSON, no auth.
+	handle /.well-known/openaccess.json {
+		reverse_proxy http://${HTTP_ADDR}
+	}
+
 	# IRC over WebSocket: Caddy terminates TLS and proxies to Ergo's loopback
 	# WebSocket listener, so web clients hit wss://${DOMAIN}/irc and agents get a
 	# WebSocket transport without exposing another public port. (No-op if IRC=0;

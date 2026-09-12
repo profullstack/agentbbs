@@ -272,6 +272,9 @@ func main() {
 		mux.HandleFunc("/verify", a.handleVerify)
 		mux.HandleFunc("/irc-auth", a.handleIRCAuth) // Ergo auth-script: members-only gate
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+		// OpenAccess descriptor for the BBS host itself (Caddy proxies the
+		// well-known path here); the files host serves the same one.
+		mux.Handle(files.OpenAccessPath, files.OpenAccessHandler())
 		log.Info("verify endpoint listening", "addr", verifyAddr)
 		srv := &http.Server{Addr: verifyAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		if err := srv.ListenAndServe(); err != nil {
