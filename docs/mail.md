@@ -147,7 +147,35 @@ them at the local Mailu relay so codes actually send:
 AGENTBBS_SMTP_HOST=127.0.0.1
 AGENTBBS_SMTP_PORT=25
 AGENTBBS_SMTP_FROM=bbs@bbs.profullstack.com
+AGENTBBS_SMTP_SERVERNAME=mail.profullstack.com   # set by setup.sh
 # user/pass omitted: the co-located relay accepts local submission unauthenticated
+```
+
+`AGENTBBS_SMTP_SERVERNAME` is the name STARTTLS certificates are verified
+against when it differs from the dialled host — the relay answers on
+`127.0.0.1` but presents a cert for the mail host. It mirrors
+`AGENTBBS_MAIL_SMTP_SERVERNAME` on the mailbox gateway and `setup.sh` sets it
+whenever the Mailu stack is enabled.
+
+On a **loopback** relay the sender skips certificate verification outright. The
+connection never leaves the host, so there is nothing to intercept — and tying
+`join@` registration to an on-box cert being both name-matched and unexpired is
+precisely what broke signups for nine days in September 2026 (see below).
+
+### When confirmation codes stop sending
+
+`join@` reporting *"couldn't email the code"* means `internal/mail` could not
+hand the message to the relay. The error is in the journal
+(`journalctl -u agentbbs -g "send code"`), and it now names the address and the
+failing stage. The usual cause is the mail host's TLS cert: Caddy owns ACME for
+`mail.$DOMAIN` and `deploy/mailu/refresh-certs.sh` copies it into Mailu, but
+Mailu keeps serving whatever it loaded at container start. Check what is
+actually on the wire rather than what is on disk:
+
+```bash
+printf 'QUIT\r\n' | openssl s_client -quiet -starttls smtp \
+  -connect 127.0.0.1:25 -servername mail.$DOMAIN 2>&1 | grep -i notAfter
+sudo /usr/local/bin/agentbbs-mailu-certs   # copies + reloads; loud on failure
 ```
 
 ## Provisioning member mailboxes

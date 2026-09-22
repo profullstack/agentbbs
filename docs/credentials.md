@@ -130,6 +130,7 @@ on any failure.
 | `AGENTBBS_SET_IRC_SUDO` | `1` | chat — invoke the helper via `sudo` (set `0` if the BBS already runs as root, e.g. in tests) |
 | `AGENTBBS_SMTP_HOST` / `_FROM` | unset | **sending** all of the above emails (required to actually send) |
 | `AGENTBBS_SMTP_PORT` / `_USER` / `_PASS` | `587` / unset / unset | SMTP submission (STARTTLS) |
+| `AGENTBBS_SMTP_SERVERNAME` | unset (= `_HOST`) | name STARTTLS certs are verified against when the relay is dialled on loopback; verification is skipped entirely for a loopback relay |
 
 ## Two SMTP paths (and why one is `:25`)
 
