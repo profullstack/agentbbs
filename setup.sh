@@ -1243,6 +1243,11 @@ if [ "$MAIL_STACK" = "1" ]; then
   # (its cert is for ${MAIL_DOMAIN}, never 127.0.0.1) — no /etc/hosts hack needed.
   upsert_env AGENTBBS_MAIL_SMTP_SERVERNAME "${MAIL_DOMAIN}"
 
+  # The transactional sender (join@ confirmation codes, notify-creds) verifies
+  # the relay's STARTTLS cert against the mail host. When it dials the co-located
+  # relay on loopback there is no name to verify against, so hand it one.
+  upsert_env AGENTBBS_SMTP_SERVERNAME "${MAIL_DOMAIN}"
+
   # Cert refresher: copy Caddy's mail cert into Mailu on renewal (like news/IRC).
   install -m 0755 "${MAILU_DIR}/refresh-certs.sh" /usr/local/bin/agentbbs-mailu-certs
   cat > /etc/systemd/system/agentbbs-mailu-certs.service <<UNIT
@@ -1270,6 +1275,12 @@ WantedBy=timers.target
 UNIT
   systemctl daemon-reload
   systemctl enable --now agentbbs-mailu-certs.timer >/dev/null 2>&1 || true
+  # `enable --now` starts the TIMER, not the service, so a redeploy would
+  # otherwise leave a stale cert in place until the next tick (and do nothing at
+  # all if the timer was never scheduled). Run the refresher now, like the news
+  # and IRC sections do -- this is the step that repairs an expired mail cert.
+  DOMAIN="${DOMAIN#*.}" MAIL_HOST="${MAIL_DOMAIN}" MAILU_DIR="${MAILU_DIR}" \
+    /usr/local/bin/agentbbs-mailu-certs || warn "mailu: cert refresh failed — mail TLS may be stale (see: journalctl -u agentbbs-mailu-certs)"
 
   # Open the mail ports; bring Mailu up only once the operator has created
   # mailu.env (it carries SECRET_KEY + admin password — never auto-generated).
