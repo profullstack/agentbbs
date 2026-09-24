@@ -1236,23 +1236,28 @@ func (a *app) provisionGit(u *store.User, pubKey string) {
 		log.Error("forgejo provision", "user", u.Name, "err", err)
 		return
 	}
-	if !created {
-		return
+	if created {
+		log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
 	}
-	log.Info("provisioned git account", "user", u.Name, "host", a.forgejo.BaseURL)
 	// Register the BBS SSH key so the member can push with the same key they sign
-	// in with. No-op when called without a session key (e.g. the web verify flow).
+	// in with. This runs on EVERY call, not only when the account was just made:
+	// EnsureKey is idempotent, so re-running it re-adds a key the member removed
+	// on AgentGit, picks up a rotated BBS key, and backfills members who joined
+	// before the key was captured. Gating it on `created` meant a member's key
+	// could only ever be registered once, and never came back once deleted.
+	// No-op when called without a session key (e.g. the web verify flow).
 	if pubKey != "" {
-		if added, err := a.forgejo.EnsureKey(u.Name, "agentbbs", pubKey); err != nil {
+		if added, err := a.forgejo.EnsureKey(u.Name, gitKeyTitle(pubKey), pubKey); err != nil {
 			log.Error("forgejo ssh key", "user", u.Name, "err", err)
 		} else if added {
 			log.Info("registered git ssh key", "user", u.Name)
 		}
 	}
 	// Email the verified address their web sign-in link + one-time password so
-	// they can log in to the Forgejo UI and create repositories. Best-effort:
-	// the account already exists, so a mail failure must not block anything.
-	if a.mail.Configured() {
+	// they can log in to the Forgejo UI and create repositories. First creation
+	// only — password is empty for an account that already existed. Best-effort:
+	// a mail failure must not block anything.
+	if created && a.mail.Configured() {
 		if err := a.mail.Send(u.Email, "Your git.profullstack.com account is ready",
 			gitWelcomeEmailBody(u.Name, password, a.forgejo.LoginURL())); err != nil {
 			log.Error("git welcome email", "user", u.Name, "err", err)
@@ -1274,6 +1279,22 @@ func gitWelcomeEmailBody(name, password, loginURL string) string {
 		"After that, click the \"+\" (top right) → \"New Repository\" to create repos.\n\n" +
 		"Pushing over git uses your registered SSH key — no password needed.\n\n" +
 		"If you didn't request this, you can ignore this email.\n"
+}
+
+// gitKeyTitle labels the key in Forgejo. The fingerprint is baked into the title
+// so a member who rotates their BBS key gets a second entry rather than colliding
+// with the old one — Forgejo rejects a duplicate title with 422, which would
+// otherwise drop the new key on the floor.
+func gitKeyTitle(pubKey string) string {
+	pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(pubKey))
+	if err != nil {
+		return "agentbbs"
+	}
+	fp := strings.TrimPrefix(gossh.FingerprintSHA256(pk), "SHA256:")
+	if len(fp) > 12 {
+		fp = fp[:12]
+	}
+	return "agentbbs " + fp
 }
 
 // authorizedKey renders the session's public key as a single authorized_keys

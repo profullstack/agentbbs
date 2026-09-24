@@ -207,13 +207,28 @@ func (c Config) EnsureKey(username, title, pubKey string) (added bool, err error
 	if err != nil {
 		return false, err
 	}
+	// Forgejo answers 422 both for "this key/title is already here" (benign, we
+	// raced or the comment differs) and for "this key content is unusable".
+	// Treating every 422 as benign hid real rejections forever, so only swallow
+	// the ones that say the key or title is already taken.
 	if status == http.StatusUnprocessableEntity {
-		return false, nil // key already exists (raced or comment differs)
+		if alreadyUsed(resp) {
+			return false, nil
+		}
+		return false, fmt.Errorf("forgejo rejected key %q: %s", username, truncate(resp, 200))
 	}
 	if status < 200 || status >= 300 {
 		return false, fmt.Errorf("forgejo add key %q: %d: %s", username, status, truncate(resp, 200))
 	}
 	return true, nil
+}
+
+// alreadyUsed reports whether a 422 body is Forgejo saying the key or its title
+// is already on the account, as opposed to rejecting the key content itself.
+// Forgejo's wording: "Key content has been used as non-deploy key" /
+// "Key title has been used".
+func alreadyUsed(resp string) bool {
+	return strings.Contains(strings.ToLower(resp), "has been used")
 }
 
 // keyMaterial returns the type+base64 of an authorized-key line, dropping the
