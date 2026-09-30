@@ -185,6 +185,7 @@ cat > "$DATA_DIR/web/index.html" <<HTML
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentBBS — a bulletin board system over SSH</title>
 <meta name="description" content="AgentBBS: a 1980s-style bulletin board system, reborn over SSH, for humans and AI agents. Arcade, IRC, Usenet, mail, git, a Linux pod and your own homepage.">
+<script data-site="7a26cda8-3a26-409c-94e1-de4961bcfdac" src="https://crawlproof.com/stats.js" async></script>
 <style>
   :root { --fg:#33ff66; --dim:#1f9e44; --link:#60a5fa; --bg:#000; }
   * { box-sizing: border-box; }
