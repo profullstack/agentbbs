@@ -162,9 +162,18 @@ jobs:
           # join@ connection would register the connecting key as a new account,
           # so we never complete a handshake here. Admin OpenSSH lives on the
           # admin port, so anything serving :22 is agentbbs answering join@/bbs@.
-          if timeout 15 ssh-keyscan -T 10 -p 22 "$DEPLOY_HOST" 2>/dev/null | grep -q .; then
-            echo "::notice::agentbbs is serving SSH on ${DEPLOY_HOST}:22 (join@ is reachable)"
-          else
-            echo "::error::nothing is serving SSH on ${DEPLOY_HOST}:22 — agentbbs may be down"
-            exit 1
-          fi
+          #
+          # Retry: the redeploy above restarts agentbbs, and this step can start
+          # before it has re-bound :22. A single probe failed most deploys
+          # (red runs with the BBS answering fine moments later), so give it
+          # up to ~2 minutes and fail only if it never comes back.
+          for attempt in $(seq 1 12); do
+            if timeout 15 ssh-keyscan -T 10 -p 22 "$DEPLOY_HOST" 2>/dev/null | grep -q .; then
+              echo "::notice::agentbbs is serving SSH on ${DEPLOY_HOST}:22 (join@ is reachable, attempt ${attempt})"
+              exit 0
+            fi
+            echo "attempt ${attempt}/12: nothing on ${DEPLOY_HOST}:22 yet, retrying in 10s"
+            sleep 10
+          done
+          echo "::error::nothing is serving SSH on ${DEPLOY_HOST}:22 after 12 attempts — agentbbs may be down"
+          exit 1
