@@ -1104,9 +1104,21 @@ if [ "$FORGEJO" = "1" ]; then
     esac
     if [ -n "$FJ_ARCH" ]; then
       log "downloading forgejo ${FORGEJO_VERSION} (${FJ_ARCH})"
-      curl -fsSL "https://codeberg.org/forgejo/forgejo/releases/download/v${FORGEJO_VERSION}/forgejo-${FORGEJO_VERSION}-linux-${FJ_ARCH}" \
-        -o /usr/local/bin/forgejo && chmod 0755 /usr/local/bin/forgejo \
-        || warn "forgejo download failed — backend will be unavailable"
+      # Download beside the binary and rename over it. Writing straight to
+      # /usr/local/bin/forgejo while forgejo.service runs fails with ETXTBSY
+      # ("Text file busy"), which left prod pinned to an old release with a
+      # "download failed" warning on every redeploy. A rename is atomic and
+      # legal on a running executable; the old inode lives until the restart.
+      if curl -fsSL "https://codeberg.org/forgejo/forgejo/releases/download/v${FORGEJO_VERSION}/forgejo-${FORGEJO_VERSION}-linux-${FJ_ARCH}" \
+           -o /usr/local/bin/forgejo.new \
+         && chmod 0755 /usr/local/bin/forgejo.new \
+         && /usr/local/bin/forgejo.new --version 2>/dev/null | grep -q "$FORGEJO_VERSION"; then
+        mv -f /usr/local/bin/forgejo.new /usr/local/bin/forgejo
+        log "forgejo ${FORGEJO_VERSION} installed"
+      else
+        rm -f /usr/local/bin/forgejo.new
+        warn "forgejo ${FORGEJO_VERSION} download failed — keeping the installed binary"
+      fi
     fi
   fi
 
