@@ -205,12 +205,14 @@ UNIT
 systemctl daemon-reload
 systemctl enable forgejo >/dev/null 2>&1 || true
 systemctl restart forgejo
+# Wait for the loopback listener (the public HTTPS check is the vhost's job).
 for _ in $(seq 1 20); do
-  curl -fsS "http://${FORGEJO_HTTP_ADDR}/api/v1/version" >/dev/null 2>&1 && break
+  ss -Hltn "sport = :${FORGEJO_HTTP_ADDR##*:}" | grep -q . && break
   sleep 1
 done
 systemctl is-active --quiet forgejo || die "forgejo failed to start: journalctl -u forgejo -n50"
-log "forgejo up: $(curl -fsS "http://${FORGEJO_HTTP_ADDR}/api/v1/version")"
+ss -Hltn "sport = :${FORGEJO_HTTP_ADDR##*:}" | grep -q . || die "forgejo is not listening on ${FORGEJO_HTTP_ADDR}"
+log "forgejo up on ${FORGEJO_HTTP_ADDR}: $(/usr/local/bin/forgejo --version 2>/dev/null | head -1)"
 
 # ---- 5. firewall: open the git SSH port only if ufw is active ----------------
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
