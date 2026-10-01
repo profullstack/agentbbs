@@ -168,3 +168,24 @@ jobs:
             echo "::error::nothing is serving SSH on ${DEPLOY_HOST}:22 — agentbbs may be down"
             exit 1
           fi
+
+      - name: Probe public service ports from outside (report only)
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # setup.sh opens these in ufw and logs that the listener is up, but a
+          # DigitalOcean Cloud Firewall in front of the droplet drops anything it
+          # does not list, and from inside the box that is invisible. Probing from
+          # the runner is the only check that sees the edge. It never fails the
+          # job: a missing cloud-firewall rule is an operator action, not a
+          # deploy failure. Timed out = dropped at the edge (or by ufw);
+          # refused = reached the host but nothing listens.
+          for p in 2222:git-ssh 563:nntps 6697:ircs; do
+            port=${p%%:*} name=${p#*:}
+            if out=$(timeout 8 bash -c "exec 3<>/dev/tcp/${DEPLOY_HOST}/${port}" 2>&1); then
+              echo "::notice::${name} :${port} reachable from outside"
+            else
+              echo "::warning::${name} :${port} NOT reachable from outside (${out:-timed out}) — if setup.sh logged it as listening with a ufw ALLOW, add ${port}/tcp to the DigitalOcean Cloud Firewall"
+            fi
+          done

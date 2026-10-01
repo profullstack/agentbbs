@@ -1104,9 +1104,21 @@ if [ "$FORGEJO" = "1" ]; then
     esac
     if [ -n "$FJ_ARCH" ]; then
       log "downloading forgejo ${FORGEJO_VERSION} (${FJ_ARCH})"
-      curl -fsSL "https://codeberg.org/forgejo/forgejo/releases/download/v${FORGEJO_VERSION}/forgejo-${FORGEJO_VERSION}-linux-${FJ_ARCH}" \
-        -o /usr/local/bin/forgejo && chmod 0755 /usr/local/bin/forgejo \
-        || warn "forgejo download failed — backend will be unavailable"
+      # Download beside the binary and rename over it. Writing straight to
+      # /usr/local/bin/forgejo while forgejo.service runs fails with ETXTBSY
+      # ("Text file busy"), which left prod pinned to an old release with a
+      # "download failed" warning on every redeploy. A rename is atomic and
+      # legal on a running executable; the old inode lives until the restart.
+      if curl -fsSL "https://codeberg.org/forgejo/forgejo/releases/download/v${FORGEJO_VERSION}/forgejo-${FORGEJO_VERSION}-linux-${FJ_ARCH}" \
+           -o /usr/local/bin/forgejo.new \
+         && chmod 0755 /usr/local/bin/forgejo.new \
+         && /usr/local/bin/forgejo.new --version 2>/dev/null | grep -q "$FORGEJO_VERSION"; then
+        mv -f /usr/local/bin/forgejo.new /usr/local/bin/forgejo
+        log "forgejo ${FORGEJO_VERSION} installed"
+      else
+        rm -f /usr/local/bin/forgejo.new
+        warn "forgejo ${FORGEJO_VERSION} download failed — keeping the installed binary"
+      fi
     fi
   fi
 
@@ -1131,6 +1143,10 @@ SSH_DOMAIN = ${GIT_DOMAIN}
 # admin OpenSSH, so Forgejo gets its own port; clones use ssh://git@host:PORT/.
 DISABLE_SSH = false
 START_SSH_SERVER = true
+# Both are needed: SSH_USER only changes the advertised clone URL, while the
+# built-in server accepts the BUILTIN_SSH_SERVER_USER name (default: RUN_USER,
+# i.e. forgejo) and refuses git@ with "Invalid SSH username git".
+BUILTIN_SSH_SERVER_USER = git
 SSH_USER = git
 SSH_PORT = ${FORGEJO_SSH_PORT}
 SSH_LISTEN_PORT = ${FORGEJO_SSH_PORT}
@@ -1162,6 +1178,45 @@ FJ
     chmod 0640 "$FORGEJO_CONF"
   fi
 
+  # app.ini is written once, so settings added to the template above never reach
+  # an existing install. Converge the keys the git-over-SSH path depends on in
+  # the live file on every run (forgejo is restarted below on every run anyway).
+  FJ_CONF_CHANGED=0
+  if [ -f "$FORGEJO_CONF" ]; then
+    fj_conf_before=$(sha256sum "$FORGEJO_CONF")
+    fj_ensure_server_key() {  # KEY VALUE — set KEY = VALUE inside [server]
+      local key=$1 val=$2 tmp
+      tmp=$(mktemp)
+      awk -v k="$key" -v v="$val" '
+        function emit() { if (!done) { print k " = " v; done = 1 } }
+        function flush() { for (; blanks > 0; blanks--) print "" }
+        /^[[:space:]]*\[/ { if (insrv) emit(); flush(); insrv = ($0 ~ /^[[:space:]]*\[server\][[:space:]]*$/); print; next }
+        insrv && /^[[:space:]]*$/ { blanks++; next }
+        { flush() }
+        insrv && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { emit(); next }
+        { print }
+        END { if (insrv) emit(); else if (!done) { print ""; print "[server]"; emit() } flush() }
+      ' "$FORGEJO_CONF" > "$tmp"
+      if ! cmp -s "$tmp" "$FORGEJO_CONF"; then
+        cat "$tmp" > "$FORGEJO_CONF"   # keep owner/mode of the original file
+        log "app.ini: [server] ${key} = ${val}"
+      fi
+      rm -f "$tmp"
+    }
+    if ! grep -qE '^[[:space:]]*BUILTIN_SSH_SERVER_USER[[:space:]]*=[[:space:]]*git[[:space:]]*$' "$FORGEJO_CONF"; then
+      n=1; while [ -e "/etc/forgejo/app.bak-$(printf %03d "$n").ini" ]; do n=$((n + 1)); done
+      cp -a "$FORGEJO_CONF" "/etc/forgejo/app.bak-$(printf %03d "$n").ini"
+      log "backed up $FORGEJO_CONF -> /etc/forgejo/app.bak-$(printf %03d "$n").ini"
+    fi
+    fj_ensure_server_key DISABLE_SSH false
+    fj_ensure_server_key START_SSH_SERVER true
+    fj_ensure_server_key BUILTIN_SSH_SERVER_USER git
+    fj_ensure_server_key SSH_USER git
+    fj_ensure_server_key SSH_PORT "$FORGEJO_SSH_PORT"
+    fj_ensure_server_key SSH_LISTEN_PORT "$FORGEJO_SSH_PORT"
+    [ "$(sha256sum "$FORGEJO_CONF")" = "$fj_conf_before" ] || FJ_CONF_CHANGED=1
+  fi
+
   log "installing forgejo.service"
   cat > /etc/systemd/system/forgejo.service <<UNIT
 [Unit]
@@ -1188,13 +1243,30 @@ WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
   systemctl enable forgejo >/dev/null 2>&1 || true
+  [ "$FJ_CONF_CHANGED" = "1" ] && log "app.ini changed — restarting forgejo"
   systemctl restart forgejo
   sleep 2
   systemctl is-active --quiet forgejo \
     || warn "forgejo failed to start — check: journalctl -u forgejo -n50"
 
   # Open the Forgejo SSH port so members can push (git@${GIT_DOMAIN}:${FORGEJO_SSH_PORT}).
-  ufw allow "${FORGEJO_SSH_PORT}/tcp" >/dev/null 2>&1 || true
+  # Every run, and loudly: a silent `|| true` here is how a missing rule went
+  # unnoticed. ufw is enabled in §10, so this rule is in place before then.
+  ufw allow "${FORGEJO_SSH_PORT}/tcp" >/dev/null \
+    || warn "ufw allow ${FORGEJO_SSH_PORT}/tcp failed — git over SSH will be unreachable"
+
+  # Prove the built-in SSH server is listening, and say so in the deploy log
+  # (the box has no shell, so the CI log is the only place this is visible).
+  for _ in $(seq 1 15); do
+    ss -Hltn "sport = :${FORGEJO_SSH_PORT}" | grep -q . && break
+    sleep 1
+  done
+  if ss -Hltn "sport = :${FORGEJO_SSH_PORT}" | grep -q .; then
+    log "forgejo ssh listening: $(ss -Hltn "sport = :${FORGEJO_SSH_PORT}" | awk '{print $4}' | paste -sd' ')"
+  else
+    warn "forgejo ssh is NOT listening on :${FORGEJO_SSH_PORT} — check: journalctl -u forgejo -n50 | grep -i ssh"
+  fi
+  log "ufw rule for :${FORGEJO_SSH_PORT}: $(ufw status 2>/dev/null | grep -E "^${FORGEJO_SSH_PORT}/tcp" | tr -s ' ' | paste -sd';' || true) (ufw $(ufw status 2>/dev/null | head -1))"
 
   # First-run: create the admin agentbbs uses to mint member accounts, and store
   # an admin-scoped token in agentbbs.env. Guarded on the token being empty so
@@ -1335,4 +1407,8 @@ cat <<DONE
   Update     re-run this script (git pull + rebuild + restart)
 DONE
 warn "Before you log out: open a new terminal and confirm  ssh -p ${ADMIN_SSH_PORT} <you>@${DOMAIN}  works."
-warn "If you attached a DigitalOcean Cloud Firewall, also allow ${ADMIN_SSH_PORT}, 22, 80, 443 there."
+DO_FW_PORTS="${ADMIN_SSH_PORT}, 22, 80, 443"
+[ "$IRC" = "1" ] && DO_FW_PORTS="${DO_FW_PORTS}, 6697"
+[ "$NEWS" = "1" ] && DO_FW_PORTS="${DO_FW_PORTS}, 563"
+[ "$FORGEJO" = "1" ] && DO_FW_PORTS="${DO_FW_PORTS}, ${FORGEJO_SSH_PORT}"
+warn "If you attached a DigitalOcean Cloud Firewall, also allow ${DO_FW_PORTS} there (it drops what it does not list, even when ufw allows it)."
