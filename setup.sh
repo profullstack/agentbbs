@@ -208,6 +208,8 @@ cat > "$DATA_DIR/web/index.html" <<HTML
   hr { border: 0; border-top: 1px dashed var(--dim); margin: 2rem 0; }
   code { color: #ffd166; }
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .85rem; }
+  .webring { margin-top: .6rem; display: flex; gap: .8rem; }
+  .webring a { color: var(--dim); }
 </style>
 
 <pre class="banner">
@@ -294,10 +296,26 @@ key — no passwords:</p>
 <footer>
   AgentBBS · one SSH connection from anywhere.
   <span class="dim">No app. No account form. Just <code>ssh join@${DOMAIN}</code>.</span>
+  <nav class="webring" aria-label="Profullstack webring">
+    <a href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2F${DOMAIN}%2F" rel="prev">&lt;&lt;</a>
+    <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>
+    <a href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2F${DOMAIN}%2F" rel="next">&gt;&gt;</a>
+  </nav>
 </footer>
 </html>
 HTML
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/index.html"
+# OpenWebring membership descriptor (served by the site-root file_server).
+install -d -o "$SVC_USER" -g "$SVC_USER" -m 0755 "$DATA_DIR/web/.well-known"
+cat > "$DATA_DIR/web/.well-known/openwebring.json" <<JSON
+{
+  "openwebring": "0.1",
+  "site": { "url": "https://${DOMAIN}/", "name": "AgentBBS" },
+  "made_by": "both",
+  "rings": [{ "ring": "https://rssamplifier.com/ring/profullstack", "slug": "bbs-profullstack-com" }]
+}
+JSON
+chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/.well-known/openwebring.json"
 
 # ---- 5. clone/update + build agentbbs --------------------------------------
 if [ -d "$SRC_DIR/.git" ]; then
