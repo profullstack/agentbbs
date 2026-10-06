@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -235,6 +236,8 @@ type Store interface {
 	// SetFilesSetting writes a Files service setting. Idempotent upsert.
 	SetFilesSetting(key, value string) error
 
+	// Ping runs a trivial query, for the public health check.
+	Ping(ctx context.Context) error
 	Close() error
 }
 
@@ -1173,6 +1176,11 @@ func (s *sqliteStore) SetFilesSetting(key, value string) error {
 		INSERT INTO files_settings (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
+}
+
+func (s *sqliteStore) Ping(ctx context.Context) error {
+	var one int
+	return s.db.QueryRowContext(ctx, "select 1").Scan(&one)
 }
 
 func (s *sqliteStore) Close() error { return s.db.Close() }
