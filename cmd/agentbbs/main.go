@@ -272,6 +272,7 @@ func main() {
 		mux.HandleFunc("/verify", a.handleVerify)
 		mux.HandleFunc("/irc-auth", a.handleIRCAuth) // Ergo auth-script: members-only gate
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+		mux.HandleFunc("/api/health", a.handleHealth) // Caddy proxies it: status.profullstack.com
 		// OpenAccess descriptor for the BBS host itself (Caddy proxies the
 		// well-known path here); the files host serves the same one.
 		mux.Handle(files.OpenAccessPath, files.OpenAccessHandler())
@@ -2394,4 +2395,20 @@ func remoteIP(s ssh.Session) string {
 		return host
 	}
 	return s.RemoteAddr().String()
+}
+
+// handleHealth is the public health check status.profullstack.com polls via
+// Caddy: it proves this process (the one serving SSH :22) is up and its SQLite
+// store answers a query within 3s. Never returns error details.
+func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := a.st.Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"error","db":"down"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"status":"ok","db":"ok"}`))
 }

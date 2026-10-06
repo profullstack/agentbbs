@@ -807,6 +807,12 @@ ${DOMAIN} {
 		reverse_proxy http://${HTTP_ADDR}
 	}
 
+	# Public health check (status.profullstack.com): answered by the agentbbs
+	# process itself after a SQLite query, so a 200 proves the BBS is up.
+	handle /api/health {
+		reverse_proxy http://${HTTP_ADDR}
+	}
+
 	# IRC over WebSocket: Caddy terminates TLS and proxies to Ergo's loopback
 	# WebSocket listener, so web clients hit wss://${DOMAIN}/irc and agents get a
 	# WebSocket transport without exposing another public port. (No-op if IRC=0;
