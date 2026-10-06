@@ -689,10 +689,18 @@ ${GIT_DOMAIN} {
 "
 fi
 
+# news.${DOMAIN} sits under the *.${DOMAIN} wildcard site, whose policy is
+# on_demand only, so Caddy never obtains this name in the background. (Live on
+# 2026-10-06: no attempt was ever logged, and :563 served the expired bootstrap
+# cert.) Opting the site into on_demand gets it issued on the first handshake,
+# through the same ask endpoint, which approves AGENTBBS_NEWS_HOST.
 NEWS_SITE=""
 if [ "$NEWS" = "1" ]; then
   NEWS_SITE="
 news.${DOMAIN} {
+	tls {
+		on_demand
+	}
 	encode zstd gzip
 	header Content-Type \"text/plain; charset=utf-8\"
 	respond \"AgentBBS Usenet (members-only). Point a newsreader at news.${DOMAIN}:563 over NNTPS and AUTHINFO USER <your-bbs-name> (any password). Or from the BBS: ssh -t news@${DOMAIN}\"
