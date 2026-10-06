@@ -34,12 +34,17 @@ cert_not_after() {
 
 # notAfter of the cert the running relay serves over STARTTLS, or empty if the
 # probe can't be made (openssl missing, port closed, Mailu down).
+#
+# No -quiet: OpenSSL 3.5 (Ubuntu 26.04) then prints no certificate at all, so
+# x509 read nothing, the pipeline failed under pipefail, and the assignment that
+# calls this killed the whole script with a bare exit 1 before it said a word.
+# The probe is best-effort, so it must never be what fails the run.
 served_not_after() {
   command -v openssl >/dev/null 2>&1 || return 0
-  printf 'QUIT\r\n' \
-    | timeout 10 openssl s_client -quiet -starttls smtp \
+  { printf 'QUIT\r\n' \
+    | timeout 10 openssl s_client -starttls smtp \
         -connect "$PROBE_ADDR" -servername "$MAIL_HOST" 2>/dev/null \
-    | openssl x509 -noout -enddate 2>/dev/null | sed 's/^notAfter=//'
+    | openssl x509 -noout -enddate 2>/dev/null | sed 's/^notAfter=//'; } || true
 }
 
 # Caddy stores certs under certificates/<acme-dir>/<host>/<host>.{crt,key};
