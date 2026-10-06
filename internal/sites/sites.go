@@ -49,6 +49,11 @@ type Manager struct {
 	usersDir string // <data>/users
 	domDir   string // <data>/domains  (the symlink farm Caddy serves)
 	baseHost string // AGENTBBS_HOST, e.g. bbs.profullstack.com (for <name>.<host>)
+	// Hosts the BBS itself serves under the *.<baseHost> wildcard, which Caddy
+	// therefore routes through on-demand TLS too (news.bbs.profullstack.com).
+	// They are not members, so without this the ask query 404s them and they
+	// never get a certificate.
+	serviceHosts map[string]struct{}
 }
 
 // NewManager prepares the symlink farm under dataDir/domains.
@@ -57,11 +62,16 @@ func NewManager(st store.Store, dataDir string) (*Manager, error) {
 	if err := os.MkdirAll(domDir, 0o755); err != nil {
 		return nil, err
 	}
+	svc := map[string]struct{}{}
+	if h := Normalize(os.Getenv("AGENTBBS_NEWS_HOST")); h != "" {
+		svc[h] = struct{}{}
+	}
 	return &Manager{
-		st:       st,
-		usersDir: filepath.Join(dataDir, "users"),
-		domDir:   domDir,
-		baseHost: strings.ToLower(strings.TrimSpace(os.Getenv("AGENTBBS_HOST"))),
+		st:           st,
+		usersDir:     filepath.Join(dataDir, "users"),
+		domDir:       domDir,
+		baseHost:     strings.ToLower(strings.TrimSpace(os.Getenv("AGENTBBS_HOST"))),
+		serviceHosts: svc,
 	}, nil
 }
 
@@ -157,6 +167,10 @@ func (m *Manager) AskHandler() http.Handler {
 		d := Normalize(r.URL.Query().Get("domain"))
 		if d == "" || !Valid(d) {
 			http.Error(w, "bad domain", http.StatusBadRequest)
+			return
+		}
+		if _, ok := m.serviceHosts[d]; ok {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		// Free user-homepage subdomain: <name>.<baseHost> for any registered

@@ -205,6 +205,7 @@ func TestSyncRemovesStaleDomainEntries(t *testing.T) {
 
 func TestAskUserSubdomain(t *testing.T) {
 	t.Setenv("AGENTBBS_HOST", "bbs.profullstack.com")
+	t.Setenv("AGENTBBS_NEWS_HOST", "news.bbs.profullstack.com")
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -229,6 +230,7 @@ func TestAskUserSubdomain(t *testing.T) {
 		{"nobody.bbs.profullstack.com", http.StatusNotFound}, // no such user
 		{"a.b.bbs.profullstack.com", http.StatusNotFound},    // multi-label, not a user subdomain
 		{"bbs.profullstack.com", http.StatusNotFound},        // apex is not a user subdomain
+		{"news.bbs.profullstack.com", http.StatusOK},         // the BBS's own news host, not a member
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/check?domain="+c.domain, nil)
