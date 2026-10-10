@@ -300,6 +300,7 @@ key — no passwords:</p>
     <a href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2F${DOMAIN}%2F" rel="prev">&lt;&lt;</a>
     <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>
     <a href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2F${DOMAIN}%2F" rel="next">&gt;&gt;</a>
+    <a href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2F${DOMAIN}%2F" title="Random site" aria-label="Random site">&#x2684;</a>
   </nav>
 </footer>
 </html>
