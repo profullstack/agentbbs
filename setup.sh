@@ -220,8 +220,6 @@ cat > "$DATA_DIR/web/index.html" <<HTML
   hr { border: 0; border-top: 1px dashed var(--dim); margin: 2rem 0; }
   code { color: #ffd166; }
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .85rem; }
-  .webring { margin-top: .6rem; display: flex; gap: .8rem; }
-  .webring a { color: var(--dim); }
 </style>
 
 <pre class="banner">
@@ -308,13 +306,12 @@ key — no passwords:</p>
 <footer>
   AgentBBS · one SSH connection from anywhere.
   <span class="dim">No app. No account form. Just <code>ssh join@${DOMAIN}</code>.</span>
-  <nav class="webring" aria-label="Profullstack webring">
-    <a href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2F${DOMAIN}%2F" rel="prev">&lt;&lt;</a>
-    <a href="https://rssamplifier.com/ring/profullstack">Profullstack</a>
-    <a href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2F${DOMAIN}%2F" rel="next">&gt;&gt;</a>
-    <a href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2F${DOMAIN}%2F" title="Random site" aria-label="Random site">&#x2684;</a>
-  </nav>
 </footer>
+<!-- @profullstack/footer: this pre-rendered copy is what the ring verifier reads; embed.js swaps in the @latest template in the browser. -->
+<footer data-profullstack-footer data-site="https://${DOMAIN}/">
+<footer class="pfs-footer" data-pfs-footer="0.2.1"><style>.pfs-footer{--pfs-footer-muted:color-mix(in srgb,currentColor 62%,transparent);--pfs-footer-gap:.5rem 1.25rem;--pfs-footer-size:.875rem;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent);font-size:var(--pfs-footer-size);line-height:1.5;color:inherit}.pfs-footer__inner{max-width:72rem;margin:0 auto;padding:1.5rem 1rem;display:flex;flex-direction:column;align-items:center;gap:.75rem;text-align:center}.pfs-footer a{color:var(--pfs-footer-muted);text-decoration:none}.pfs-footer a:hover,.pfs-footer a:focus-visible{color:inherit;text-decoration:underline}.pfs-footer__links{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--pfs-footer-gap)}.pfs-footer__ring{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:.6rem}.pfs-footer__icon{display:inline-block;width:1em;height:1em;vertical-align:-.125em;background-color:currentColor;-webkit-mask:var(--pfs-footer-glyph) center/contain no-repeat;mask:var(--pfs-footer-glyph) center/contain no-repeat}.pfs-footer__icon--random{--pfs-footer-glyph:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'none'%20stroke%3D'black'%20stroke-width%3D'2'%20stroke-linecap%3D'round'%20stroke-linejoin%3D'round'%3E%3Crect%20x%3D'3'%20y%3D'3'%20width%3D'18'%20height%3D'18'%20rx%3D'3'%2F%3E%3Ccircle%20cx%3D'8'%20cy%3D'8'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'8'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'12'%20cy%3D'12'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'8'%20cy%3D'16'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'16'%20r%3D'1'%2F%3E%3C%2Fsvg%3E")}.pfs-footer__icon--vote{--pfs-footer-glyph:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'none'%20stroke%3D'black'%20stroke-width%3D'2'%20stroke-linecap%3D'round'%20stroke-linejoin%3D'round'%3E%3Cpath%20d%3D'M12%204%2021%2019H3z'%2F%3E%3C%2Fsvg%3E")}.pfs-footer__copy{margin:0;color:var(--pfs-footer-muted)}.pfs-footer__copy a{color:inherit}</style><div class="pfs-footer__inner"><nav class="webring pfs-footer__ring" aria-label="Profullstack webring"><a href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2F${DOMAIN}%2F" rel="prev" title="Previous site">&lt;&lt;</a><a href="https://rssamplifier.com/ring/profullstack">Profullstack</a><a href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2F${DOMAIN}%2F" rel="next" title="Next site">&gt;&gt;</a><a href="https://rssamplifier.com/ring/profullstack/random?from=https%3A%2F%2F${DOMAIN}%2F" title="Random site" aria-label="Random site"><span class="pfs-footer__icon pfs-footer__icon--random" aria-hidden="true"></span></a><a href="https://rssamplifier.com/ring/profullstack/vote" referrerpolicy="origin" title="Vote for this site" aria-label="Vote for this site"><span class="pfs-footer__icon pfs-footer__icon--vote" aria-hidden="true"></span></a></nav><p class="pfs-footer__copy">&copy; 2026 <a href="https://profullstack.com/">Profullstack, Inc.</a></p></div></footer>
+</footer>
+<script type="module" src="https://cdn.jsdelivr.net/npm/@profullstack/footer@latest/src/embed.js"></script>
 </html>
 HTML
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/index.html"
