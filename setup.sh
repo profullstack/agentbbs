@@ -48,6 +48,14 @@ IRC="${IRC:-1}"                     # set 0 to skip the co-located Ergo IRC serv
 IRC_DOMAIN="${IRC_DOMAIN:-irc.${DOMAIN#*.}}"  # IRC host (default: irc.<root-of-DOMAIN>, e.g. irc.profullstack.com)
 NEWS="${NEWS:-1}"                   # set 0 to skip the co-located Usenet/NNTP server (news.${DOMAIN})
 ERGO_VERSION="${ERGO_VERSION:-2.18.0}"  # Ergo IRCd release to install
+# Caddy is installed from the pinned GitHub release (checksummed), not an apt repo:
+# the Cloudsmith repo started answering 402 (2026-10-10), which failed apt-get
+# update for the whole script, and Ubuntu's own package is 2.6.2 (2022).
+CADDY_VERSION="${CADDY_VERSION:-2.11.7}"
+# shellcheck disable=SC2034  # read indirectly via ${!caddy_sha_var} in §9
+CADDY_SHA512_amd64="a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
+# shellcheck disable=SC2034
+CADDY_SHA512_arm64="3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38e71c51dc7baed875e50d1ca1279196e84302967237386ae87c91ae9f2aaceada682e"
 IRC_NETWORK="${IRC_NETWORK:-ProfullstackBBS}"  # IRC network name shown to clients
 ERGO_DATA="${ERGO_DATA:-/var/lib/ergo}"  # Ergo state dir (ircd.db, tls/)
 FORGEJO="${FORGEJO:-1}"                  # set 0 to skip the AgentGit Forgejo backend (git.${DOMAIN#*.})
@@ -104,6 +112,10 @@ esac
 # ---- 1. packages -----------------------------------------------------------
 log "installing packages"
 export DEBIAN_FRONTEND=noninteractive
+# The old Cloudsmith Caddy repo now answers 402, which fails apt-get update.
+# Drop it (and its keyring) on hosts provisioned before §9 stopped using it.
+rm -f /etc/apt/sources.list.d/caddy-stable.list \
+  /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 apt-get update -qq
 apt-get install -y -qq \
   git ca-certificates curl ufw ffmpeg unzip jq \
@@ -659,13 +671,51 @@ if ! admin_ssh_up; then
 fi
 
 # ---- 9. Caddy front end (HTTPS + tilde /~user homepages) --------------------
+# An existing caddy (e.g. the dpkg one from the old Cloudsmith repo, with its
+# unit in /usr/lib/systemd/system) is kept as is. A fresh host gets the release
+# binary at the same path, the same user, and upstream's caddy.service.
 if ! command -v caddy >/dev/null; then
-  log "installing Caddy"
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq && apt-get install -y -qq caddy >/dev/null
+  log "installing Caddy ${CADDY_VERSION} (GitHub release)"
+  caddy_sha_var="CADDY_SHA512_${GOARCH}"
+  caddy_tgz="caddy_${CADDY_VERSION}_linux_${GOARCH}.tar.gz"
+  caddy_tmp=$(mktemp -d)
+  curl -fsSL -o "$caddy_tmp/$caddy_tgz" \
+    "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${caddy_tgz}"
+  echo "${!caddy_sha_var}  $caddy_tmp/$caddy_tgz" | sha512sum -c --quiet - \
+    || die "caddy ${CADDY_VERSION} checksum mismatch"
+  tar -xzf "$caddy_tmp/$caddy_tgz" -C "$caddy_tmp" caddy
+  install -m 0755 "$caddy_tmp/caddy" /usr/bin/caddy
+  rm -rf "$caddy_tmp"
+  getent group caddy >/dev/null || groupadd --system caddy
+  getent passwd caddy >/dev/null || useradd --system --gid caddy \
+    --home-dir /var/lib/caddy --create-home --shell /usr/sbin/nologin caddy
+  install -d -m 0755 /etc/caddy
+  if [ ! -e /usr/lib/systemd/system/caddy.service ] && [ ! -e /etc/systemd/system/caddy.service ]; then
+    cat > /etc/systemd/system/caddy.service <<'UNIT'
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+  fi
+  systemctl enable caddy >/dev/null 2>&1 || true
 fi
 # Let Caddy (user 'caddy') read the per-user public_html trees.
 usermod -aG "$SVC_USER" caddy 2>/dev/null || true
