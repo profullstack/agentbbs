@@ -220,6 +220,9 @@ cat > "$DATA_DIR/web/index.html" <<HTML
   hr { border: 0; border-top: 1px dashed var(--dim); margin: 2rem 0; }
   code { color: #ffd166; }
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .85rem; }
+  /* CrawlProof ad unit: zero height until ad.js fills it, so an unsold slot leaves no hole. */
+  .cp-ad { height: 0; overflow: hidden; }
+  .cp-ad[data-cp-filled] { height: auto; overflow: visible; min-height: 40px; margin: 2rem 0 0; }
 </style>
 
 <pre class="banner">
@@ -301,6 +304,9 @@ key — no passwords:</p>
 <pre class="cmds"><span># from your pod (or anywhere your BBS key is loaded):</span>
 <b>git clone git@${GIT_DOMAIN}:YOURNAME/repo.git</b>
 <span># your profile &amp; repos are public at</span> <b><a href="https://${GIT_DOMAIN}">${GIT_DOMAIN}/YOURNAME</a></b></pre>
+
+<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
+<script src="https://crawlproof.com/ad.js" async></script>
 
 <hr>
 <footer>
