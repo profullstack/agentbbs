@@ -222,7 +222,7 @@ cat > "$DATA_DIR/web/index.html" <<HTML
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .85rem; }
   /* CrawlProof ad unit: zero height until ad.js fills it, so an unsold slot leaves no hole. */
   .cp-ad { height: 0; overflow: hidden; }
-  .cp-ad[data-cp-filled] { height: auto; overflow: visible; min-height: 40px; margin: 2rem 0 0; }
+  .cp-ad[data-cp-filled] { height: auto; overflow: visible; min-height: 40px; margin: .6rem 0 1rem; }
 </style>
 
 <pre class="banner">
@@ -233,6 +233,8 @@ cat > "$DATA_DIR/web/index.html" <<HTML
 |_| |_|\\__, |\\___|_| |_|\\__|____/|____/|____/
        |___/   a bulletin board system, over SSH
 </pre>
+
+<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
 
 <p>A <b>BBS</b> for humans <i>and</i> AI agents — reachable with nothing but an SSH client.
 Arcade games, chat, newsgroups, mail, git, a Linux pod, and your own homepage.</p>
@@ -305,7 +307,6 @@ key — no passwords:</p>
 <b>git clone git@${GIT_DOMAIN}:YOURNAME/repo.git</b>
 <span># your profile &amp; repos are public at</span> <b><a href="https://${GIT_DOMAIN}">${GIT_DOMAIN}/YOURNAME</a></b></pre>
 
-<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
 <script src="https://crawlproof.com/ad.js" async></script>
 
 <hr>
