@@ -190,6 +190,9 @@ install -d -o "$SVC_USER" -g "$SVC_USER" -m 0755 "$DATA_DIR/web"      # site roo
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 0755 "$DATA_DIR/domains"  # symlink farm: custom domain -> users/<name>/public_html
 # Landing page (always regenerated — it's templated marketing content, not user
 # data): explains what a BBS is and lists every way in. Edit here to change it.
+# pit.world global footer: fetched at deploy time (this page is static) and
+# baked in as the last thing on the page. 3s timeout; any failure bakes nothing.
+PIT_FOOTER="$(curl -fsS --max-time 3 "https://pit.world/snippets/footer.html?site=${DOMAIN}" 2>/dev/null || true)"
 cat > "$DATA_DIR/web/index.html" <<HTML
 <!doctype html>
 <html lang="en">
@@ -239,6 +242,9 @@ Arcade games, chat, newsgroups, mail, git, a Linux pod, and your own homepage.</
 
 <pre class="cmds"><span># first time? just connect — your SSH key becomes your account:</span>
 <b>ssh join@${DOMAIN}</b></pre>
+
+<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
+<script src="https://crawlproof.com/ad.js" async></script>
 
 <h2>What's a BBS?</h2>
 <p class="dim">
@@ -305,19 +311,12 @@ key — no passwords:</p>
 <b>git clone git@${GIT_DOMAIN}:YOURNAME/repo.git</b>
 <span># your profile &amp; repos are public at</span> <b><a href="https://${GIT_DOMAIN}">${GIT_DOMAIN}/YOURNAME</a></b></pre>
 
-<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
-<script src="https://crawlproof.com/ad.js" async></script>
-
 <hr>
 <footer>
-  AgentBBS · one SSH connection from anywhere.
-  <span class="dim">No app. No account form. Just <code>ssh join@${DOMAIN}</code>.</span>
+  AgentBBS · <code>ssh join@${DOMAIN}</code> · &copy; 2026 <a href="https://profullstack.com/">Profullstack, Inc.</a>
+  · <a href="https://github.com/profullstack/agentbbs">code</a>
 </footer>
-<!-- @profullstack/footer: this pre-rendered copy is what the ring verifier reads; embed.js swaps in the @latest template in the browser. -->
-<footer data-profullstack-footer data-site="https://${DOMAIN}/">
-<footer class="pfs-footer" data-pfs-footer="0.2.1"><style>.pfs-footer{--pfs-footer-muted:color-mix(in srgb,currentColor 62%,transparent);--pfs-footer-gap:.5rem 1.25rem;--pfs-footer-size:.875rem;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent);font-size:var(--pfs-footer-size);line-height:1.5;color:inherit}.pfs-footer__inner{max-width:72rem;margin:0 auto;padding:1.5rem 1rem;display:flex;flex-direction:column;align-items:center;gap:.75rem;text-align:center}.pfs-footer a{color:var(--pfs-footer-muted);text-decoration:none}.pfs-footer a:hover,.pfs-footer a:focus-visible{color:inherit;text-decoration:underline}.pfs-footer__links{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--pfs-footer-gap)}.pfs-footer__ring{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:.6rem}.pfs-footer__icon{display:inline-block;width:1em;height:1em;vertical-align:-.125em;background-color:currentColor;-webkit-mask:var(--pfs-footer-glyph) center/contain no-repeat;mask:var(--pfs-footer-glyph) center/contain no-repeat}.pfs-footer__icon--random{--pfs-footer-glyph:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'none'%20stroke%3D'black'%20stroke-width%3D'2'%20stroke-linecap%3D'round'%20stroke-linejoin%3D'round'%3E%3Crect%20x%3D'3'%20y%3D'3'%20width%3D'18'%20height%3D'18'%20rx%3D'3'%2F%3E%3Ccircle%20cx%3D'8'%20cy%3D'8'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'8'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'12'%20cy%3D'12'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'8'%20cy%3D'16'%20r%3D'1'%2F%3E%3Ccircle%20cx%3D'16'%20cy%3D'16'%20r%3D'1'%2F%3E%3C%2Fsvg%3E")}.pfs-footer__icon--vote{--pfs-footer-glyph:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'none'%20stroke%3D'black'%20stroke-width%3D'2'%20stroke-linecap%3D'round'%20stroke-linejoin%3D'round'%3E%3Cpath%20d%3D'M12%204%2021%2019H3z'%2F%3E%3C%2Fsvg%3E")}.pfs-footer__copy{margin:0;color:var(--pfs-footer-muted)}.pfs-footer__copy a{color:inherit}</style><div class="pfs-footer__inner"><nav class="webring pfs-footer__ring" aria-label="Profullstack webring"><a href="https://rssamplifier.com/ring/profullstack/previous?from=https%3A%2F%2F${DOMAIN}%2F" rel="prev" title="Previous site">&lt;&lt;</a><a href="https://rssamplifier.com/ring/profullstack">Profullstack</a><a href="https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2F${DOMAIN}%2F" rel="next" title="Next site">&gt;&gt;</a></nav><p class="pfs-footer__copy">&copy; 2026 <a href="https://profullstack.com/">Profullstack, Inc.</a></p></div></footer>
-</footer>
-<script type="module" src="https://cdn.jsdelivr.net/npm/@profullstack/footer@latest/src/embed.js"></script>
+${PIT_FOOTER}
 </html>
 HTML
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/index.html"
