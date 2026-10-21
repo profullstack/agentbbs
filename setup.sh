@@ -223,9 +223,6 @@ cat > "$DATA_DIR/web/index.html" <<HTML
   hr { border: 0; border-top: 1px dashed var(--dim); margin: 2rem 0; }
   code { color: #ffd166; }
   footer { margin-top: 2.5rem; color: var(--dim); font-size: .85rem; }
-  /* CrawlProof ad unit: zero height until ad.js fills it, so an unsold slot leaves no hole. */
-  .cp-ad { height: 0; overflow: hidden; }
-  .cp-ad[data-cp-filled] { height: auto; overflow: visible; min-height: 40px; margin: 2rem 0 0; }
 </style>
 
 <pre class="banner">
@@ -242,9 +239,6 @@ Arcade games, chat, newsgroups, mail, git, a Linux pod, and your own homepage.</
 
 <pre class="cmds"><span># first time? just connect — your SSH key becomes your account:</span>
 <b>ssh join@${DOMAIN}</b></pre>
-
-<aside class="cp-ad" data-cp-ad data-slot="8a261afe-e212-4ab9-8c60-35607016bd33" data-format="text_link"></aside>
-<script src="https://crawlproof.com/ad.js" async></script>
 
 <h2>What's a BBS?</h2>
 <p class="dim">
