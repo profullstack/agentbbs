@@ -1104,48 +1104,93 @@ func (a *app) offerPremium(s ssh.Session, in *bufio.Reader, u *store.User) {
 	}, "\n"))
 
 	// Explicit opt-in. Anything but yes leaves with no payment created.
-	wish.Print(s, "\n  Become a Founding member now? Type \"yes\" for a payment address [no]: ")
+	wish.Print(s, "\n  Become a Founding member now? Type \"yes\" for a checkout link [no]: ")
 	line, err := readLine(s, in)
 	if err != nil || !isYes(line) {
-		wish.Print(s, "\n  No problem — you're a free member. Want it later? Re-run: ssh join@"+a.host+"\n\n")
+		wish.Print(s, "\n  No problem, you're a free member. Want it later? Re-run: ssh join@"+a.host+"\n\n")
 		return
 	}
 
-	ref := payments.PremiumReference(u.PubKeyFP)
-	c, ok, err := payments.CreatePremiumCharge(ref)
-	if !ok || err != nil {
+	// CoinPay needs a receipt email. join@ verifies one first, but ask if a
+	// legacy account has none on file.
+	email := strings.TrimSpace(u.Email)
+	for tries := 0; !validEmail(email) && tries < 3; tries++ {
+		wish.Print(s, "\n  Email for your receipt: ")
+		line, err := readLine(s, in)
 		if err != nil {
-			log.Error("create premium charge", "err", err)
+			return
 		}
-		wish.Print(s, "\n  Payment is temporarily unavailable — please try again shortly.\n\n")
+		email = strings.TrimSpace(line)
+	}
+	if !validEmail(email) {
+		wish.Print(s, "\n  A valid email is needed for checkout. Re-run: ssh join@"+a.host+"\n\n")
 		return
 	}
-	// Remember the payment id so a later connect can confirm settlement.
-	if err := a.st.SetPremiumPayment(u.ID, c.ID); err != nil {
-		log.Error("store premium payment id", "err", err)
-	}
-	amount := "$" + payments.PremiumAmount() + " " + payments.PremiumCurrency()
-	if c.CryptoAmount != "" {
-		cur := c.Currency
-		if cur == "" {
-			cur = strings.ToUpper(payments.PremiumBlockchain())
+
+	ses, ok, err := payments.CreatePremiumSession(payments.Buyer{
+		AccountID: u.Name,
+		Email:     email,
+		PubKeyFP:  u.PubKeyFP,
+		UserID:    u.ID,
+	}, "https://"+a.host+"/~"+u.Name)
+	if !ok || err != nil {
+		if err != nil {
+			log.Error("create premium checkout session", "err", err)
 		}
-		amount += "  (≈ " + c.CryptoAmount + " " + cur + ")"
+		wish.Print(s, "\n  Payment is temporarily unavailable, please try again shortly.\n\n")
+		return
+	}
+	// Remember the session id so a later connect can confirm settlement.
+	if err := a.st.SetPremiumPayment(u.ID, ses.ID); err != nil {
+		log.Error("store premium checkout session id", "err", err)
 	}
 	lines := []string{
 		"",
-		"  amount    " + amount,
-		"  send to   " + c.Address,
-	}
-	if c.QR != "" {
-		lines = append(lines, "  qr        "+c.QR)
-	}
-	lines = append(lines,
+		"  amount    $" + payments.PremiumAmount() + " " + payments.PremiumCurrency() + "  (pay with any major coin or PayPal)",
+		"  checkout  " + ses.URL,
 		"",
-		"  Perks unlock once payment confirms — then re-run: ssh join@"+a.host,
+		"  Open the link, or scan it with your phone:",
 		"",
-	)
+	}
 	wish.Println(s, strings.Join(lines, "\n"))
+	if q := payments.TerminalQR(ses.URL, "  "); q != "" {
+		wish.Print(s, strings.ReplaceAll(q, "\n", "\r\n"))
+	}
+	wish.Print(s, "\r\n  Waiting for payment here (press Enter to leave; perks also unlock on your next connect)...\r\n")
+
+	if a.waitForPremium(s, in, u, ses.ID) {
+		wish.Println(s, "\n  Payment received. Welcome, Founding member!")
+		a.showPremiumWelcome(s, *u)
+		return
+	}
+	wish.Print(s, "\n  Once payment confirms, re-run: ssh join@"+a.host+"\n\n")
+}
+
+// waitForPremium polls the checkout session until it is paid, the member
+// presses Enter, the session disconnects, or the session would have expired.
+func (a *app) waitForPremium(s ssh.Session, in *bufio.Reader, u *store.User, sessionID string) bool {
+	left := make(chan struct{})
+	go func() {
+		_, _ = readLine(s, in)
+		close(left)
+	}()
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	deadline := time.After(60 * time.Minute)
+	for {
+		select {
+		case <-left:
+			return false
+		case <-s.Context().Done():
+			return false
+		case <-deadline:
+			return false
+		case <-tick.C:
+			if a.ensurePremium(u) {
+				return true
+			}
+		}
+	}
 }
 
 // isYes reports whether a prompt line is an affirmative opt-in.

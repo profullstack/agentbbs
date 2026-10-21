@@ -429,8 +429,8 @@ AGENTBBS_FILES_WEB_ADDR=${FILES_WEB_ADDR}
 #          Offered at join@.
 
 # Premium payments hit the CoinPay REST API directly (no coinpay CLI needed):
-# join@ creates a charge and shows the amount + deposit address; a later connect
-# verifies settlement by payment id. COINPAY_API_KEY + the merchant id are
+# join@ creates a hosted checkout session (any coin or PayPal) and shows its URL
+# + a QR code, then polls it; a later connect also verifies by session id. COINPAY_API_KEY + the merchant id are
 # injected by the CI deploy from GitHub secrets (COINPAY_API_KEY /
 # COINPAY_MERCHANT_ID); set them here directly when provisioning by hand:
 # COINPAY_API_KEY=cp_live_xxx
@@ -438,7 +438,7 @@ AGENTBBS_FILES_WEB_ADDR=${FILES_WEB_ADDR}
 # AGENTBBS_COINPAY_API_URL=https://coinpayportal.com/api
 # AGENTBBS_PREMIUM_AMOUNT=10
 # AGENTBBS_PREMIUM_CURRENCY=USD
-# AGENTBBS_PREMIUM_BLOCKCHAIN=eth
+# AGENTBBS_COINPAY_PROPERTY=bbs.profullstack.com
 
 # Member email (free for every verified member). Addresses are <name>@${DOMAIN}
 # (the address domain), while the Mailu server lives on the mail host below.

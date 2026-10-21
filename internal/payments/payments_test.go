@@ -5,25 +5,27 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestCreateAndVerifyPremium(t *testing.T) {
-	var gotAuth, gotBlockchain, gotBusiness string
+func TestCreateSessionAndVerifyPaid(t *testing.T) {
+	var gotAuth string
+	var body map[string]any
+	status := "open"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/payments/create":
-			var body map[string]any
+		case r.Method == http.MethodPost && r.URL.Path == "/checkout/sessions":
 			b, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(b, &body)
-			gotBlockchain, _ = body["blockchain"].(string)
-			gotBusiness, _ = body["business_id"].(string)
-			// crypto_amount comes back as a bare JSON number from the live API.
-			_, _ = w.Write([]byte(`{"payment":{"id":"pay_1","payment_address":"0xABC","crypto_amount":0.0031,"crypto_currency":"ETH","status":"pending"}}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/payments/pay_1":
-			_, _ = w.Write([]byte(`{"payment":{"id":"pay_1","status":"confirmed"}}`))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"success":true,"id":"cs_abc","url":"https://coinpayportal.com/checkout/cs_abc","status":"open","methods":["BTC","ETH",{"code":"PAYPAL"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/checkout/sessions/cs_abc":
+			_, _ = w.Write([]byte(`{"success":true,"session":{"id":"cs_abc","status":"` + status + `"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/payments/pay_old":
+			_, _ = w.Write([]byte(`{"payment":{"id":"pay_old","status":"forwarded"}}`))
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -31,64 +33,82 @@ func TestCreateAndVerifyPremium(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("AGENTBBS_COINPAY_API_URL", srv.URL)
-	t.Setenv("COINPAY_API_KEY", "cp_test_key")
-	t.Setenv("AGENTBBS_COINPAY_MERCHANT_ID", "biz_42")
+	t.Setenv("COINPAY_API_KEY", "cp_live_test")
+	t.Setenv("AGENTBBS_COINPAY_MERCHANT_ID", "")
 
 	if !APIConfigured() {
-		t.Fatal("APIConfigured should be true with key + merchant id")
+		t.Fatal("a business key alone must configure hosted checkout")
 	}
-
-	c, ok, err := CreatePremiumCharge("abbs-premium-deadbeef")
+	ses, ok, err := CreatePremiumSession(Buyer{AccountID: "alice", Email: "a@example.com", PubKeyFP: "SHA256:xyz", UserID: 7}, "https://bbs.profullstack.com/~alice")
 	if err != nil || !ok {
 		t.Fatalf("create: ok=%v err=%v", ok, err)
 	}
-	if c.Address != "0xABC" || c.ID != "pay_1" || c.CryptoAmount != "0.0031" {
-		t.Fatalf("charge fields wrong: %+v", c)
+	if ses.ID != "cs_abc" || !strings.HasSuffix(ses.URL, "/checkout/cs_abc") {
+		t.Fatalf("session fields wrong: %+v", ses)
 	}
-	if gotAuth != "Bearer cp_test_key" {
+	if len(ses.Methods) != 3 || ses.Methods[2] != "PAYPAL" {
+		t.Fatalf("methods = %v", ses.Methods)
+	}
+	if gotAuth != "Bearer cp_live_test" {
 		t.Fatalf("auth header = %q", gotAuth)
 	}
-	if gotBlockchain != "ETH" {
-		t.Fatalf("blockchain not upper-cased: %q", gotBlockchain)
+	for k, want := range map[string]any{
+		"customer_email": "a@example.com", "account_id": "alice", "property": "bbs.profullstack.com",
+		"currency": "USD", "amount": float64(99), "expires_in_minutes": float64(60),
+		"success_url": "https://bbs.profullstack.com/~alice",
+	} {
+		if body[k] != want {
+			t.Errorf("body[%s] = %v, want %v", k, body[k], want)
+		}
 	}
-	if gotBusiness != "biz_42" {
-		t.Fatalf("business_id = %q", gotBusiness)
+	if _, has := body["blockchain"]; has {
+		t.Error("hosted checkout must not pin a blockchain")
+	}
+	meta, _ := body["metadata"].(map[string]any)
+	if meta["pubkey_fp"] != "SHA256:xyz" || meta["user_id"] != "7" || meta["ref"] != PremiumReference("SHA256:xyz") {
+		t.Errorf("metadata = %v", meta)
 	}
 
-	if paid, checked := VerifyPremium("pay_1"); !checked || !paid {
-		t.Fatalf("verify confirmed: paid=%v checked=%v", paid, checked)
+	if paid, checked := VerifyPremium("cs_abc"); !checked || paid {
+		t.Fatalf("open session: paid=%v checked=%v", paid, checked)
 	}
-	// Empty id is a clean "not checked".
+	status = "paid"
+	if paid, checked := VerifyPremium("cs_abc"); !checked || !paid {
+		t.Fatalf("paid session: paid=%v checked=%v", paid, checked)
+	}
+	// A legacy single-chain payment stored before hosted checkout still settles.
+	if paid, checked := VerifyPremium("pay_old"); !checked || !paid {
+		t.Fatalf("legacy payment: paid=%v checked=%v", paid, checked)
+	}
 	if _, checked := VerifyPremium(""); checked {
-		t.Fatal("empty payID must not be checked")
+		t.Fatal("empty id must not be checked")
+	}
+}
+
+func TestCreateSessionNeedsEmail(t *testing.T) {
+	t.Setenv("COINPAY_API_KEY", "cp_live_test")
+	if _, ok, err := CreatePremiumSession(Buyer{AccountID: "alice"}, ""); ok || err == nil {
+		t.Fatalf("missing email: ok=%v err=%v", ok, err)
 	}
 }
 
 func TestNotConfigured(t *testing.T) {
 	t.Setenv("COINPAY_API_KEY", "")
-	t.Setenv("AGENTBBS_COINPAY_MERCHANT_ID", "")
 	if APIConfigured() {
-		t.Fatal("must not be configured without key/merchant")
+		t.Fatal("must not be configured without a key")
 	}
-	if _, ok, err := CreatePremiumCharge("ref"); ok || err != nil {
+	if _, ok, err := CreatePremiumSession(Buyer{AccountID: "a", Email: "a@b.co"}, ""); ok || err != nil {
 		t.Fatalf("unconfigured create: ok=%v err=%v", ok, err)
 	}
-	if _, checked := VerifyPremium("pay_1"); checked {
+	if _, checked := VerifyPremium("cs_abc"); checked {
 		t.Fatal("unconfigured verify must not be checked")
 	}
 }
 
-func TestFlexStrDecodesNumberOrString(t *testing.T) {
-	for _, raw := range []string{
-		`{"payment":{"crypto_amount":0.0031}}`,   // live API: bare number
-		`{"payment":{"crypto_amount":"0.0031"}}`, // legacy: quoted string
-	} {
-		var env paymentEnvelope
-		if err := json.Unmarshal([]byte(raw), &env); err != nil {
-			t.Fatalf("unmarshal %s: %v", raw, err)
-		}
-		if got := string(env.Payment.CryptoAmount); got != "0.0031" {
-			t.Fatalf("crypto_amount from %s = %q, want 0.0031", raw, got)
-		}
+func TestTerminalQR(t *testing.T) {
+	q := TerminalQR("https://coinpayportal.com/checkout/cs_abc", "  ")
+	lines := strings.Split(strings.TrimRight(q, "\n"), "\n")
+	if len(lines) < 10 || !strings.HasPrefix(lines[0], "  █") {
+		t.Fatalf("unexpected QR:\n%s", q)
 	}
 }

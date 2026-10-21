@@ -9,7 +9,11 @@
 //	AGENTBBS_COINPAY_API_URL       API base (default https://coinpayportal.com/api)
 //	AGENTBBS_PREMIUM_AMOUNT        fiat amount (default 99)
 //	AGENTBBS_PREMIUM_CURRENCY      fiat currency (default USD)
-//	AGENTBBS_PREMIUM_BLOCKCHAIN    settlement chain (default eth)
+//	AGENTBBS_COINPAY_PROPERTY      site hostname on the session (default bbs.profullstack.com)
+//
+// Checkout is a CoinPay hosted session (POST /checkout/sessions): the buyer
+// opens its URL (shown with a QR code in the SSH terminal), picks any coin the
+// business accepts or PayPal, and we poll GET /checkout/sessions/:id for paid.
 //
 // Operators can also grant pod time manually: `agentbbs grant-pod <user> N`.
 package payments
@@ -27,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,9 +48,8 @@ const FoundingCap = "1,000"
 
 // Premium charge parameters — overridable via env so the offer can change
 // without a rebuild.
-func PremiumAmount() string     { return envOr("AGENTBBS_PREMIUM_AMOUNT", "99") }
-func PremiumCurrency() string   { return envOr("AGENTBBS_PREMIUM_CURRENCY", "USD") }
-func PremiumBlockchain() string { return envOr("AGENTBBS_PREMIUM_BLOCKCHAIN", "eth") }
+func PremiumAmount() string   { return envOr("AGENTBBS_PREMIUM_AMOUNT", "99") }
+func PremiumCurrency() string { return envOr("AGENTBBS_PREMIUM_CURRENCY", "USD") }
 
 // MerchantID is the CoinPay merchant/business id payments are created under.
 func MerchantID() string { return os.Getenv("AGENTBBS_COINPAY_MERCHANT_ID") }
@@ -55,8 +59,9 @@ func apiBase() string {
 	return trimSlash(envOr("AGENTBBS_COINPAY_API_URL", "https://coinpayportal.com/api"))
 }
 
-// APIConfigured reports whether live CoinPay calls can be made.
-func APIConfigured() bool { return apiKey() != "" && MerchantID() != "" }
+// APIConfigured reports whether live CoinPay calls can be made. The business
+// API key identifies the merchant, so a hosted checkout needs only the key.
+func APIConfigured() bool { return apiKey() != "" }
 
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -72,19 +77,6 @@ func trimSlash(s string) string {
 	return s
 }
 
-// Charge is a created CoinPay payment a user must fund: a unique deposit
-// address, the crypto amount, the fiat amount it settles, and the payment id
-// (store it to verify settlement later).
-type Charge struct {
-	Address      string
-	CryptoAmount string
-	Currency     string
-	FiatAmount   string
-	FiatCurrency string
-	ID           string
-	QR           string
-}
-
 // PremiumReference derives a stable memo for a user's lifetime membership from
 // their key fingerprint; sent as payment metadata for reconciliation.
 func PremiumReference(pubkeyFP string) string { return Reference("premium", pubkeyFP) }
@@ -96,48 +88,60 @@ func Reference(plan, pubkeyFP string) string {
 	return "abbs-" + plan + "-" + hex.EncodeToString(mac.Sum(nil))[:12]
 }
 
-// flexStr decodes a JSON value that may arrive as either a string or a number
-// into a string. CoinPay returns crypto_amount as a bare JSON number (e.g.
-// 0.0031), but has sent it quoted in the past — accept both so a representation
-// change on their side can't break the charge again.
-type flexStr string
+// Property is the site hostname CoinPay records on the checkout session and
+// echoes on every webhook, so the shared business can tell BBS sales apart.
+func Property() string { return envOr("AGENTBBS_COINPAY_PROPERTY", "bbs.profullstack.com") }
 
-func (f *flexStr) UnmarshalJSON(b []byte) error {
-	b = bytes.TrimSpace(b)
-	if len(b) == 0 || string(b) == "null" {
-		*f = ""
-		return nil
+// Buyer identifies who a premium checkout session is for.
+type Buyer struct {
+	AccountID string // stable account handle (CoinPay account_id)
+	Email     string // verified member email (CoinPay customer_email)
+	PubKeyFP  string // SSH key fingerprint (metadata only)
+	UserID    int64  // local store id (metadata only)
+}
+
+// Session is a created CoinPay hosted checkout session: the buyer opens URL,
+// picks any coin the business accepts or PayPal, and pays there.
+type Session struct {
+	ID        string   `json:"id"`
+	URL       string   `json:"url"`
+	Status    string   `json:"status"`
+	ExpiresAt string   `json:"expires_at"`
+	Methods   []string `json:"-"`
+}
+
+// SessionBody builds the POST /checkout/sessions request body. Exposed for tests.
+func SessionBody(b Buyer, successURL string) map[string]any {
+	amount := json.Number(PremiumAmount())
+	if f, err := strconv.ParseFloat(PremiumAmount(), 64); err == nil {
+		amount = json.Number(strconv.FormatFloat(f, 'f', -1, 64))
 	}
-	if b[0] == '"' {
-		var s string
-		if err := json.Unmarshal(b, &s); err != nil {
-			return err
-		}
-		*f = flexStr(s)
-		return nil
+	body := map[string]any{
+		"amount":             amount,
+		"currency":           PremiumCurrency(),
+		"description":        "AgentBBS Founding Lifetime membership",
+		"customer_email":     b.Email,
+		"account_id":         b.AccountID,
+		"property":           Property(),
+		"expires_in_minutes": 60,
+		"metadata": map[string]any{
+			"ref":       PremiumReference(b.PubKeyFP),
+			"plan":      "premium_lifetime",
+			"handle":    b.AccountID,
+			"pubkey_fp": b.PubKeyFP,
+			"user_id":   strconv.FormatInt(b.UserID, 10),
+			"site":      Property(),
+		},
 	}
-	*f = flexStr(b) // number (or other scalar) — keep its literal text
-	return nil
+	if successURL != "" {
+		body["success_url"] = successURL
+		body["cancel_url"] = successURL
+	}
+	return body
 }
 
-// coinpayPayment is the (subset of the) CoinPay payment object, returned
-// wrapped as {"payment": {…}}.
-type coinpayPayment struct {
-	ID           string  `json:"id"`
-	Status       string  `json:"status"`
-	Address      string  `json:"payment_address"`
-	CryptoAmount flexStr `json:"crypto_amount"`
-	CryptoCurr   string  `json:"crypto_currency"`
-	QR           string  `json:"qr_code"`
-}
-
-type paymentEnvelope struct {
-	Payment coinpayPayment `json:"payment"`
-}
-
-// coinpayDo performs an authenticated CoinPay API call and decodes the
-// {"payment":{…}} envelope.
-func coinpayDo(ctx context.Context, method, path string, body any) (*paymentEnvelope, error) {
+// apiDo performs an authenticated CoinPay API call and returns the raw body.
+func apiDo(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -152,6 +156,7 @@ func coinpayDo(ctx context.Context, method, path string, body any) (*paymentEnve
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey())
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -162,57 +167,90 @@ func coinpayDo(ctx context.Context, method, path string, body any) (*paymentEnve
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("coinpay %s %s: %s: %s", method, path, resp.Status, bytesTrim(raw))
 	}
-	var env paymentEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("coinpay %s %s: bad response: %w", method, path, err)
-	}
-	return &env, nil
+	return raw, nil
 }
 
 func bytesTrim(b []byte) string { return string(bytes.TrimSpace(b)) }
 
-// CreatePremiumCharge creates a CoinPay payment for the lifetime membership and
-// returns the deposit address, amount, and payment id (store the id to verify
-// settlement later). created is false when CoinPay isn't configured.
-func CreatePremiumCharge(ref string) (Charge, bool, error) {
+// CreatePremiumSession creates a hosted CoinPay checkout session for the
+// lifetime membership. created is false when CoinPay isn't configured. Store
+// the session id (cs_...) to verify settlement later.
+func CreatePremiumSession(b Buyer, successURL string) (Session, bool, error) {
 	if !APIConfigured() {
-		return Charge{}, false, nil
+		return Session{}, false, nil
 	}
-	amount := json.Number(PremiumAmount())
-	if f, err := strconv.ParseFloat(PremiumAmount(), 64); err == nil {
-		amount = json.Number(strconv.FormatFloat(f, 'f', -1, 64))
-	}
-	body := map[string]any{
-		"business_id": MerchantID(),
-		"amount":      amount,
-		"currency":    PremiumCurrency(),
-		"blockchain":  toUpper(PremiumBlockchain()),
-		"description": "AgentBBS Premium membership (lifetime)",
-		"metadata":    map[string]string{"ref": ref},
+	if b.Email == "" || b.AccountID == "" {
+		return Session{}, false, fmt.Errorf("coinpay: checkout needs an email and an account id")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	env, err := coinpayDo(ctx, http.MethodPost, "/payments/create", body)
+	raw, err := apiDo(ctx, http.MethodPost, "/checkout/sessions", SessionBody(b, successURL))
 	if err != nil {
-		return Charge{}, false, err
+		return Session{}, false, err
 	}
-	p := env.Payment
-	if p.Address == "" {
-		return Charge{}, false, fmt.Errorf("coinpay: payment created without an address")
+	var out struct {
+		Session
+		Methods []json.RawMessage `json:"methods"`
 	}
-	return Charge{
-		Address:      p.Address,
-		CryptoAmount: string(p.CryptoAmount),
-		Currency:     p.CryptoCurr,
-		FiatAmount:   PremiumAmount(),
-		FiatCurrency: PremiumCurrency(),
-		ID:           p.ID,
-		QR:           p.QR,
-	}, true, nil
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Session{}, false, fmt.Errorf("coinpay: bad session response: %w", err)
+	}
+	if out.ID == "" || out.URL == "" {
+		return Session{}, false, fmt.Errorf("coinpay: session created without an id/url: %s", bytesTrim(raw))
+	}
+	ses := out.Session
+	for _, m := range out.Methods {
+		var code string
+		if json.Unmarshal(m, &code) == nil {
+			ses.Methods = append(ses.Methods, code)
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal(m, &obj) == nil {
+			for _, k := range []string{"code", "method", "id", "type"} {
+				if v, ok := obj[k].(string); ok && v != "" {
+					ses.Methods = append(ses.Methods, v)
+					break
+				}
+			}
+		}
+	}
+	return ses, true, nil
+}
+
+// paidStatus reports whether a CoinPay session/payment status means settled.
+func paidStatus(st string) bool {
+	switch st {
+	case "paid", "complete", "completed", "confirmed", "forwarded":
+		return true
+	}
+	return false
+}
+
+// SessionStatus fetches a checkout session's status.
+func SessionStatus(ctx context.Context, id string) (string, error) {
+	raw, err := apiDo(ctx, http.MethodGet, "/checkout/sessions/"+url.PathEscape(id), nil)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Status  string `json:"status"`
+		Session *struct {
+			Status string `json:"status"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", err
+	}
+	if out.Status == "" && out.Session != nil {
+		out.Status = out.Session.Status
+	}
+	return out.Status, nil
 }
 
 // VerifyPremium reports whether a created premium payment has settled. payID is
-// the CoinPay payment id from CreatePremiumCharge. checked is false when we
+// the CoinPay checkout session id (cs_...) from CreatePremiumSession, or a legacy
+// payment id from before hosted checkout. checked is false when we
 // could not reach CoinPay (caller falls back to store state); paid is true on a
 // confirmed/forwarded status.
 func VerifyPremium(payID string) (paid bool, checked bool) {
@@ -221,24 +259,25 @@ func VerifyPremium(payID string) (paid bool, checked bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	env, err := coinpayDo(ctx, http.MethodGet, "/payments/"+url.PathEscape(payID), nil)
-	if err != nil {
-		return false, false // network/API error — fall back to store state
-	}
-	switch env.Payment.Status {
-	case "confirmed", "forwarded", "completed", "paid":
-		return true, true
-	default:
-		return false, true
-	}
-}
-
-func toUpper(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'a' && c <= 'z' {
-			b[i] = c - 32
+	if strings.HasPrefix(payID, "cs_") {
+		st, err := SessionStatus(ctx, payID)
+		if err != nil {
+			return false, false // network/API error: fall back to store state
 		}
+		return paidStatus(st), true
 	}
-	return string(b)
+	// Legacy single-chain payment ids from before hosted checkout.
+	raw, err := apiDo(ctx, http.MethodGet, "/payments/"+url.PathEscape(payID), nil)
+	if err != nil {
+		return false, false
+	}
+	var env struct {
+		Payment struct {
+			Status string `json:"status"`
+		} `json:"payment"`
+	}
+	if json.Unmarshal(raw, &env) != nil {
+		return false, false
+	}
+	return paidStatus(env.Payment.Status), true
 }
