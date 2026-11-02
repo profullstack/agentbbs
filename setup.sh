@@ -642,6 +642,12 @@ else
   systemctl daemon-reload
 fi
 
+# ---- 7c. CI deploy forced command --------------------------------------------
+# root's authorized_keys pins the GitHub Actions deploy key to this one script
+# (restrict,command="/usr/local/sbin/agentbbs-ci-deploy"); keep it in sync with
+# the repo so the CI verbs (arch / upload / deploy) always match deploy.yml.
+install -m 0755 "$SRC_DIR/deploy/ci-deploy.sh" /usr/local/sbin/agentbbs-ci-deploy
+
 # ---- 8. move admin OpenSSH to ADMIN_SSH_PORT (before agentbbs takes :22) -----
 log "moving admin OpenSSH to :${ADMIN_SSH_PORT}"
 install -d -m 0755 /etc/ssh/sshd_config.d
