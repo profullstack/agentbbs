@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#000"/>
+  <g font-family="DejaVu Sans Mono, Menlo, Consolas, monospace" font-weight="700" fill="#33ff66">
+    <text x="256" y="250" font-size="150" text-anchor="middle">&gt;_</text>
+    <text x="256" y="380" font-size="120" text-anchor="middle" letter-spacing="6">BBS</text>
+  </g>
+</svg>

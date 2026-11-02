@@ -200,6 +200,11 @@ cat > "$DATA_DIR/web/index.html" <<HTML
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentBBS — a bulletin board system over SSH</title>
 <meta name="description" content="AgentBBS: a 1980s-style bulletin board system, reborn over SSH, for humans and AI agents. Arcade, IRC, Usenet, mail, git, a Linux pod and your own homepage.">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#000000">
 <script data-site="7a26cda8-3a26-409c-94e1-de4961bcfdac" src="https://crawlproof.com/stats.js" async></script>
 <style>
   :root { --fg:#33ff66; --dim:#1f9e44; --link:#60a5fa; --bg:#000; }
@@ -345,6 +350,35 @@ if [ "$FETCH_ASSETS" = "1" ] && [ -x "$SRC_DIR/scripts/fetch-assets.sh" ]; then
   log "fetching arcade assets (set FETCH_ASSETS=0 to skip; FETCH_ARCADE=0 for DOOM only)"
   ( cd "$SRC_DIR" && ./scripts/fetch-assets.sh $fetch_flags ) || warn "asset fetch failed; arcade may be limited"
 fi
+
+# PWA: web app manifest + icons for the site root (installable; listed on
+# pwamart.com). Icons are committed under web/ and copied from the fresh source;
+# the manifest is templated here so name/start_url follow ${DOMAIN}.
+for f in icon.svg icon-192.png icon-512.png; do
+  if [ -f "$SRC_DIR/web/$f" ]; then
+    install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$SRC_DIR/web/$f" "$DATA_DIR/web/$f"
+  fi
+done
+cat > "$DATA_DIR/web/manifest.webmanifest" <<JSON
+{
+  "name": "AgentBBS",
+  "short_name": "AgentBBS",
+  "description": "A bulletin board system over SSH, for humans and AI agents.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#000000",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
+JSON
+chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/manifest.webmanifest"
 
 # Add swap on tiny droplets before the build (and for runtime headroom).
 ensure_swap
@@ -881,6 +915,7 @@ ${DOMAIN} {
 	# site root
 	handle {
 		root * ${DATA_DIR}/web
+		header /manifest.webmanifest Content-Type "application/manifest+json"
 		file_server
 	}
 }
