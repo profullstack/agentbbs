@@ -15,14 +15,16 @@ name: deploy
 # 16GB runner removes that failure mode entirely.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
-#   DEPLOY_SSH_KEY   private key whose public half is in the droplet admin
-#                    user's ~/.ssh/authorized_keys
+#   DEPLOY_SSH_KEY   private key whose public half is in root's authorized_keys
+#                    pinned to ONE forced command:
+#                      restrict,command="/usr/local/sbin/agentbbs-ci-deploy" ssh-ed25519 ...
+#                    (deploy/ci-deploy.sh, installed by setup.sh). The key gets
+#                    no shell, scp, sftp, pty or forwarding; it can only run
+#                    `arch`, `upload <binary>` (stdin) and `deploy <branch>`.
 #   DEPLOY_HOST      bbs.profullstack.com  (or the droplet's public IP)
 # Optional (have sensible defaults below):
 #   DEPLOY_USER      admin SSH user (default: root)
 #   DEPLOY_PORT      admin SSH port  (default: 2202 — setup.sh moves OpenSSH here)
-#
-# The admin user needs passwordless sudo (root already does).
 
 on:
   push:
@@ -62,7 +64,7 @@ jobs:
         run: |
           uname_m="$(ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" 'uname -m')"
+            "${DEPLOY_USER}@${DEPLOY_HOST}" arch)"
           case "$uname_m" in
             x86_64|amd64)  goarch=amd64 ;;
             aarch64|arm64) goarch=arm64 ;;
@@ -93,13 +95,12 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '2202' }}
         run: |
-          # scp can only name one remote target; copy each binary explicitly.
-          scp -i ~/.ssh/id_deploy -P "$DEPLOY_PORT" \
-              -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              dist/agentbbs "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/agentbbs-deploy-agentbbs"
-          scp -i ~/.ssh/id_deploy -P "$DEPLOY_PORT" \
-              -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              dist/ascii-live "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/agentbbs-deploy-ascii-live"
+          # The forced command reads each binary from stdin (no scp/sftp).
+          for b in agentbbs ascii-live; do
+            ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
+                -o BatchMode=yes -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" "upload $b" < "dist/$b"
+          done
 
       - name: Provision / redeploy (idempotent, SKIP_BUILD=1)
         env:
@@ -115,43 +116,16 @@ jobs:
           COINPAY_MERCHANT_ID: ${{ secrets.COINPAY_MERCHANT_ID }}
           AGENTBBS_QRYPT_ISSUER_KEY: ${{ secrets.AGENTBBS_QRYPT_ISSUER_KEY }}
         run: |
-          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
+          # The forced command (deploy/ci-deploy.sh) syncs /opt/agentbbs to
+          # origin/$DEPLOY_BRANCH, installs the uploaded binaries, pauses the
+          # self-update timer and execs setup.sh with SKIP_BUILD=1. App secrets
+          # travel on stdin as NAME=<base64> lines, never on the command line.
+          case "$DEPLOY_BRANCH" in main|master) ;; *) echo "::error::refusing to deploy $DEPLOY_BRANCH"; exit 1 ;; esac
+          for k in COINPAY_API_KEY COINPAY_MERCHANT_ID AGENTBBS_QRYPT_ISSUER_KEY; do
+            printf '%s=%s\n' "$k" "$(printf '%s' "${!k}" | base64 -w0)"
+          done | ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" \
               -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "sudo -n env BRANCH=$(printf %q "$DEPLOY_BRANCH") \
-                 COINPAY_API_KEY=$(printf %q "$COINPAY_API_KEY") \
-                 COINPAY_MERCHANT_ID=$(printf %q "$COINPAY_MERCHANT_ID") \
-                 AGENTBBS_QRYPT_ISSUER_KEY=$(printf %q "$AGENTBBS_QRYPT_ISSUER_KEY") \
-                 bash -s" <<'REMOTE'
-          set -euo pipefail
-          REPO=https://github.com/profullstack/agentbbs.git
-          BRANCH="${BRANCH:-main}"
-          SRC=/opt/agentbbs
-          # Bootstrap on a fresh box, then always sync to origin so we run the
-          # latest setup.sh (it may have changed in this very push).
-          if [ ! -d "$SRC/.git" ]; then
-            git clone --depth 1 -b "$BRANCH" "$REPO" "$SRC"
-          fi
-          git -C "$SRC" fetch --depth 1 origin "$BRANCH"
-          git -C "$SRC" reset --hard "origin/$BRANCH"
-          # Preempt the self-update timer. It redeploys from source (no
-          # SKIP_BUILD) and can hold setup.sh's flock for >5min while compiling
-          # on this tiny droplet, which would starve and time out the deploy
-          # below. This CI push is authoritative (prebuilt binaries + reset to
-          # the exact commit), so stop any in-flight timer run to release the
-          # lock and pause the timer so it can't re-fire mid-deploy; setup.sh
-          # re-enables the timer at the end of its run.
-          systemctl stop agentbbs-update.timer agentbbs-update.service 2>/dev/null || true
-          # Install the runner-built binaries, then tell setup.sh not to compile.
-          install -m 0755 /tmp/agentbbs-deploy-agentbbs   /usr/local/bin/agentbbs
-          install -m 0755 /tmp/agentbbs-deploy-ascii-live /usr/local/bin/ascii-live
-          rm -f /tmp/agentbbs-deploy-agentbbs /tmp/agentbbs-deploy-ascii-live
-          exec env BRANCH="$BRANCH" SKIP_BUILD=1 \
-            COINPAY_API_KEY="${COINPAY_API_KEY:-}" \
-            COINPAY_MERCHANT_ID="${COINPAY_MERCHANT_ID:-}" \
-            AGENTBBS_QRYPT_ISSUER_KEY="${AGENTBBS_QRYPT_ISSUER_KEY:-}" \
-            "$SRC/setup.sh"
-          REMOTE
+              "${DEPLOY_USER}@${DEPLOY_HOST}" "deploy $DEPLOY_BRANCH"
 
       - name: Smoke-test that agentbbs serves :22
         if: success()

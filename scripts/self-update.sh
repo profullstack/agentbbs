@@ -39,5 +39,8 @@ if [ "$FORCE" -eq 0 ] \
 fi
 
 echo "redeploying: ${local_rev:0:12} -> ${remote_rev:0:12} (force=$FORCE)"
-# setup.sh does the reset --hard, rebuild, and restart under its own lock.
+# Move the checkout to origin first so the NEW setup.sh runs. Exec'ing the
+# on-disk copy before its own reset ran the previous commit's setup.sh, so a
+# setup.sh change needed two timer runs to take effect.
+git -C "$SRC_DIR" reset --hard "origin/${BRANCH}"
 exec "$SRC_DIR/setup.sh"
