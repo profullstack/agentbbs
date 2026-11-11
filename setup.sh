@@ -206,6 +206,8 @@ cat > "$DATA_DIR/web/index.html" <<HTML
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="theme-color" content="#000000">
 <script data-site="7a26cda8-3a26-409c-94e1-de4961bcfdac" src="https://crawlproof.com/stats.js" async></script>
+<!-- WebMCP (@profullstack/webmcp): site_info and open_page for the AI agent in the visitor's browser. -->
+<script type="module" data-webmcp src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js"></script>
 <style>
   :root { --fg:#33ff66; --dim:#1f9e44; --link:#60a5fa; --bg:#000; }
   * { box-sizing: border-box; }
