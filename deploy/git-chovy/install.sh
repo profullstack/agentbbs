@@ -154,6 +154,36 @@ if ! grep -q '^BUILTIN_SSH_SERVER_USER' "$FORGEJO_CONF"; then
   log "set BUILTIN_SSH_SERVER_USER = git in $FORGEJO_CONF"
 fi
 
+# Hardening, enforced on every run (same set as agentbbs setup.sh, PR #169).
+# Forgejo users are untrusted: on 2026-11-16 a new AgentGit member pushed a
+# workflow built to dump the runner env + /etc/forgejo and exfiltrate it.
+#  - Actions off: no member workflow ever runs, even if a runner is added.
+#  - Webhooks/migrations external-only: Forgejo is on loopback beside chovy's
+#    apps, so a webhook or migration at 127.0.0.1 would be an SSRF.
+#  - Server-side git hooks off (they run as the forgejo user).
+fj_ini_set() { # section key value; returns 0 only when the file changed
+  local section=$1 key=$2 value=$3 tmp
+  tmp=$(mktemp)
+  awk -v s="[$section]" -v k="$key" -v v="$value" '
+    function emit() { if (insec && !done) { print k " = " v; done=1 } }
+    /^\[.*\]$/ { emit(); insec = ($0 == s); if (insec) seen=1; print; next }
+    insec && $0 ~ "^[ \t]*" k "[ \t]*=" { if (!done) { print k " = " v; done=1 } next }
+    { print }
+    END { emit(); if (!seen) { print ""; print s; print k " = " v } }
+  ' "$FORGEJO_CONF" > "$tmp"
+  if cmp -s "$tmp" "$FORGEJO_CONF"; then rm -f "$tmp"; return 1; fi
+  [ -n "${FJ_BACKED_UP:-}" ] || { backup "$FORGEJO_CONF"; FJ_BACKED_UP=1; }
+  cat "$tmp" > "$FORGEJO_CONF"; rm -f "$tmp"; return 0
+}
+FJ_INI_CHANGED=0
+fj_ini_set actions    ENABLED             false    && FJ_INI_CHANGED=1
+fj_ini_set webhook    ALLOWED_HOST_LIST   external && FJ_INI_CHANGED=1
+fj_ini_set migrations ALLOW_LOCALNETWORKS false    && FJ_INI_CHANGED=1
+fj_ini_set security   DISABLE_GIT_HOOKS   true     && FJ_INI_CHANGED=1
+if [ "$FJ_INI_CHANGED" = 1 ]; then
+  log "app.ini hardening applied (actions off, webhooks/migrations external-only, git hooks off)"
+fi
+
 # ---- 3. branding: chovy's mark as logo + favicon -----------------------------
 # Forgejo serves custom/public/assets/img/* over its built-in assets. The navbar
 # uses logo.svg, so the PNG is wrapped in an SVG (an <img>-loaded SVG may embed
