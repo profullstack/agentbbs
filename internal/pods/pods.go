@@ -153,6 +153,17 @@ func (m *Manager) startAgent(s ssh.Session, user string) (sock string, cleanup f
 	return "/run/agentbbs-agent/" + fname, func() { _ = l.Close(); _ = os.Remove(hostSock) }
 }
 
+// Remove force-removes the member's pod container (stopping any shells in it).
+// The home volume is kept so an unban restores their files. It returns true
+// when a container was actually removed.
+func (m *Manager) Remove(user string) bool {
+	name := m.containerName(user)
+	if err := exec.Command(m.engine, "container", "inspect", name).Run(); err != nil {
+		return false
+	}
+	return exec.Command(m.engine, "rm", "-f", name).Run() == nil
+}
+
 // Engine reports the active container engine.
 func (m *Manager) Engine() string { return m.engine }
 
