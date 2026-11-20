@@ -126,3 +126,7 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.25-warp.3
+
+replace github.com/pion/ice/v4 => github.com/livekit/ice/v4 v4.4.8-warp.4
