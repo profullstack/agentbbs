@@ -345,6 +345,32 @@ type DomainMap struct {
 // ErrKeyMismatch means a username is already registered with another key.
 var ErrKeyMismatch = errors.New("username registered with a different key")
 
+// ErrInvalidUsername is returned when a new account name is not a safe handle.
+var ErrInvalidUsername = errors.New("invalid username: use 2-32 lowercase letters, digits or dashes, starting with a letter or digit")
+
+// ValidUsername reports whether name is safe to create an account under.
+// The name becomes a filesystem path (users/<name>, the pod home), a forge
+// and mail account and an argv element of root helpers, so it is held to
+// ^[a-z0-9][a-z0-9-]{1,31}$: no "/", "..", spaces, shell metacharacters or a
+// leading "-". On 2026-11-19 an attacker logged in as
+// "../../../../home/agentbbs/.ssh", "$(id)" and "-oproxycommand=zz"; the
+// auto-signup path created all of them and the first wrote into ~/.ssh.
+func ValidUsername(name string) bool {
+	if len(name) < 2 || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ErrDomainTaken means a domain is already mapped to a different member.
 var ErrDomainTaken = errors.New("domain already mapped to another account")
 
@@ -560,6 +586,9 @@ func (s *sqliteStore) EnsureUser(name, kind, fp string) (User, error) {
 	u, err := scanUser(s.db.QueryRow(`SELECT `+userCols+` FROM users WHERE name = ?`, name))
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		if !ValidUsername(name) {
+			return User{}, ErrInvalidUsername
+		}
 		res, err := s.db.Exec(`INSERT INTO users (name, kind, pubkey_fp) VALUES (?,?,?)`, name, kind, fp)
 		if err != nil {
 			return User{}, err

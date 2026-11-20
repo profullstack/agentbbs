@@ -21,7 +21,7 @@
 #
 # Run as root on the BBS box. The member must already be a BBS member; this only
 # sets the secret — membership itself is still gated by /irc-auth.
-import sys, os, json, glob, secrets, hashlib, pwd, grp, subprocess
+import sys, os, re, json, glob, secrets, hashlib, pwd, grp, subprocess
 
 PASSWD_FILE = os.environ.get("ERGO_IRC_PASSWD", "/var/lib/ergo/irc-passwd")
 LOUNGE_USERS = os.environ.get("AGENTBBS_LOUNGE_USERS", "/var/lib/thelounge/users")
@@ -35,6 +35,9 @@ LOUNGE_RESET_CMD = os.environ.get(
     "AGENTBBS_LOUNGE_RESET_CMD", "docker exec -i thelounge thelounge reset"
 )
 ITERS = 200_000
+# Same rule as store.ValidUsername. This runs as root via sudo with a member
+# name in argv, and the name is joined into file paths and a docker command.
+VALID_MEMBER = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
 
 
 def hash_pw(pw):
@@ -134,6 +137,7 @@ def main(argv):
     store = load_store()
     if argv[0] == "--all":
         members = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(LOUNGE_USERS, "*.json")))
+        members = [m for m in members if VALID_MEMBER.match(m)]
         done = []
         for m in members:
             if m not in store:
@@ -146,6 +150,9 @@ def main(argv):
         print(f"provisioned {len(done)} member(s) that were missing a password")
         return 0
     member = argv[0]
+    if not VALID_MEMBER.match(member):
+        print(f"refusing unsafe member name {member!r}", file=sys.stderr)
+        return 2
     from_stdin = len(argv) > 1 and argv[1] == "-"
     if from_stdin:
         pw = sys.stdin.readline().rstrip("\n")
