@@ -497,6 +497,10 @@ func (a *app) teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 		if err == nil && !found {
 			su, err = a.st.EnsureUser(username, string(auth.KindFor(username)), fp)
 		}
+		if errors.Is(err, store.ErrInvalidUsername) {
+			wish.Fatalln(s, "usernames are 2-32 lowercase letters, digits or dashes. Try  ssh join@"+a.host)
+			return nil, nil
+		}
 		if errors.Is(err, store.ErrKeyMismatch) {
 			wish.Fatalln(s, "that username is registered with a different SSH key.")
 			return nil, nil

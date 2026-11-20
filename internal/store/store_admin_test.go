@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -162,5 +163,34 @@ func TestRecentChatsAll(t *testing.T) {
 	// Newest-first.
 	if chats[0].Role != "agent" || chats[0].Username != "dave" {
 		t.Fatalf("unexpected first chat: %+v", chats[0])
+	}
+}
+
+func TestValidUsername(t *testing.T) {
+	good := []string{"chovy", "agent-eogops", "member-1mdutzu9", "iji825404gmailcom", "z3n", "ab"}
+	bad := []string{"", "a", "-oproxycommand=zz", "$(id)", "`id`", "a b", "x;id>/tmp/p",
+		"../../../../etc", "x/../../opt/agentbbs/.git", "../..", "./run", "Chovy", "a_b", "a.b",
+		"abcdefghijklmnopqrstuvwxyz0123456"}
+	for _, n := range good {
+		if !ValidUsername(n) {
+			t.Errorf("ValidUsername(%q) = false, want true", n)
+		}
+	}
+	for _, n := range bad {
+		if ValidUsername(n) {
+			t.Errorf("ValidUsername(%q) = true, want false", n)
+		}
+	}
+}
+
+func TestEnsureUserRejectsUnsafeNames(t *testing.T) {
+	st := openTest(t)
+	for _, n := range []string{"../../../../home/agentbbs/.ssh", "$(id)", "-oproxycommand=zz"} {
+		if _, err := st.EnsureUser(n, "member", "SHA256:x"+n); !errors.Is(err, ErrInvalidUsername) {
+			t.Errorf("EnsureUser(%q) err = %v, want ErrInvalidUsername", n, err)
+		}
+	}
+	if _, err := st.EnsureUser("okname", "member", "SHA256:ok"); err != nil {
+		t.Fatalf("EnsureUser(okname): %v", err)
 	}
 }
