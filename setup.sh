@@ -1297,6 +1297,41 @@ FJ
     chmod 0640 "$FORGEJO_CONF"
   fi
 
+  # Hardening, enforced on EVERY run (app.ini above is written only once, so
+  # existing installs need this to pick changes up). Any BBS signup gets a
+  # Forgejo account, so treat every Forgejo user as untrusted:
+  #  - Actions off. On 2026-11-16 a fresh BBS member pushed a workflow that
+  #    dumped env + /etc/forgejo + /var/lib/forgejo and PUT it back to their
+  #    repo. No runner was registered so it never ran, but any runner added
+  #    later would have run it (and every other queued user job).
+  #  - Webhooks and migrations may only reach external hosts: Forgejo listens
+  #    on loopback next to the Mailu admin API and other local services, so a
+  #    member webhook/migration pointed at 127.0.0.1 would be an SSRF.
+  #  - Server-side git hooks stay off (they run as the forgejo user).
+  fj_ini_set() { # section key value
+    local section=$1 key=$2 value=$3 tmp
+    tmp=$(mktemp)
+    awk -v s="[$section]" -v k="$key" -v v="$value" '
+      function emit() { if (insec && !done) { print k " = " v; done=1 } }
+      /^\[.*\]$/ { emit(); insec = ($0 == s); if (insec) seen=1; print; next }
+      insec && $0 ~ "^[ \t]*" k "[ \t]*=" { if (!done) { print k " = " v; done=1 } next }
+      { print }
+      END { emit(); if (!seen) { print ""; print s; print k " = " v } }
+    ' "$FORGEJO_CONF" > "$tmp"
+    if cmp -s "$tmp" "$FORGEJO_CONF"; then rm -f "$tmp"; return 1; fi
+    cat "$tmp" > "$FORGEJO_CONF"; rm -f "$tmp"; return 0
+  }
+  if [ -f "$FORGEJO_CONF" ]; then
+    FJ_INI_CHANGED=0
+    fj_ini_set actions    ENABLED             false    && FJ_INI_CHANGED=1
+    fj_ini_set webhook    ALLOWED_HOST_LIST   external && FJ_INI_CHANGED=1
+    fj_ini_set migrations ALLOW_LOCALNETWORKS false    && FJ_INI_CHANGED=1
+    fj_ini_set security   DISABLE_GIT_HOOKS   true     && FJ_INI_CHANGED=1
+    if [ "$FJ_INI_CHANGED" = 1 ]; then
+      log "forgejo app.ini hardening applied (actions off, webhooks/migrations external-only, git hooks off)"
+    fi
+  fi
+
   log "installing forgejo.service"
   cat > /etc/systemd/system/forgejo.service <<UNIT
 [Unit]
