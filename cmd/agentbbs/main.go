@@ -252,6 +252,7 @@ func main() {
 	if m, err := pods.Detect(filepath.Join(dataDir, "users")); err == nil {
 		a.pods = m
 		log.Info("pods enabled", "engine", m.Engine())
+		go a.reapBannedPods()
 	} else {
 		log.Warn("pods disabled", "reason", err)
 	}
@@ -2460,4 +2461,29 @@ func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(`{"status":"ok","db":"ok"}`))
+}
+
+// reapBannedPods removes the pod of every banned member, at start and every
+// two minutes. Banning blocks new sessions, but a pod is a long-running
+// container (--restart unless-stopped) and shells left inside it keep
+// running; on 2026-11-20 a banned member's pod had been up for four days.
+func (a *app) reapBannedPods() {
+	reap := func() {
+		users, err := a.st.ListUsers(1_000_000)
+		if err != nil {
+			log.Warn("reap banned pods: list users", "err", err)
+			return
+		}
+		for _, u := range users {
+			if u.Banned && a.pods.Remove(u.Name) {
+				log.Info("removed pod of banned member", "user", u.Name)
+			}
+		}
+	}
+	reap()
+	t := time.NewTicker(2 * time.Minute)
+	defer t.Stop()
+	for range t.C {
+		reap()
+	}
 }

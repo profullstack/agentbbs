@@ -418,6 +418,41 @@ if [ -f "$SRC_DIR/pods/Containerfile" ]; then
   fi
 fi
 
+# Pod egress guard: member pods must not reach this host's private services or
+# the operator's other servers (see deploy/podguard.sh). Applied now, after the
+# service user's systemd instance starts, and every 5 minutes.
+install -m 0755 "$SRC_DIR/deploy/podguard.sh" /usr/local/sbin/agentbbs-podguard
+cat > /etc/systemd/system/agentbbs-podguard.service <<UNIT
+[Unit]
+Description=AgentBBS pod egress guard (nftables)
+After=user@${SVC_UID}.service nftables.service
+Wants=user@${SVC_UID}.service
+
+[Service]
+Type=oneshot
+Environment=SVC_USER=${SVC_USER}
+ExecStart=/usr/local/sbin/agentbbs-podguard
+
+[Install]
+WantedBy=multi-user.target user@${SVC_UID}.service
+UNIT
+cat > /etc/systemd/system/agentbbs-podguard.timer <<UNIT
+[Unit]
+Description=Re-apply the AgentBBS pod egress guard
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable agentbbs-podguard.service agentbbs-podguard.timer >/dev/null 2>&1 || true
+systemctl start agentbbs-podguard.timer >/dev/null 2>&1 || true
+systemctl start agentbbs-podguard.service \
+  || warn "pod egress guard failed to load — check: journalctl -u agentbbs-podguard -n20"
+
 # ---- 6. environment file ---------------------------------------------------
 ENV_DIR=/etc/agentbbs
 install -d -m 0750 "$ENV_DIR"
