@@ -333,6 +333,29 @@ cat > "$DATA_DIR/web/.well-known/openwebring.json" <<JSON
 }
 JSON
 chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/.well-known/openwebring.json"
+# Crawlers: robots.txt and sitemap.xml for the site root (regenerated every deploy,
+# like the landing page). The sitemap lists the landing page plus every member
+# homepage (/~name) that has an index.html, with its last-modified date.
+cat > "$DATA_DIR/web/robots.txt" <<ROBOTS
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /irc
+
+Sitemap: https://${DOMAIN}/sitemap.xml
+ROBOTS
+{
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+  printf '  <url><loc>https://%s/</loc><lastmod>%s</lastmod></url>\n' "$DOMAIN" "$(date -u +%F)"
+  for page in "$DATA_DIR"/users/*/public_html/index.html; do
+    [ -f "$page" ] || continue
+    member="${page#"$DATA_DIR"/users/}"; member="${member%%/*}"
+    case "$member" in *[!a-z0-9_-]*|'') continue ;; esac
+    printf '  <url><loc>https://%s/~%s/</loc><lastmod>%s</lastmod></url>\n' "$DOMAIN" "$member" "$(date -u -r "$page" +%F)"
+  done
+  printf '</urlset>\n'
+} > "$DATA_DIR/web/sitemap.xml"
+chown "$SVC_USER:$SVC_USER" "$DATA_DIR/web/robots.txt" "$DATA_DIR/web/sitemap.xml"
 
 # ---- 5. clone/update + build agentbbs --------------------------------------
 if [ -d "$SRC_DIR/.git" ]; then
