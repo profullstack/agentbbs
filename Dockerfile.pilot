@@ -1,0 +1,12 @@
+FROM golang:1.26-bookworm@sha256:66c04b389c4b0a2e0f0d51f3a37de0109650887a321b2a3b8cd9f573d7490a01 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/agentbbs ./cmd/agentbbs
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:52dcfbabb7457ea47c82f6e13af8c8a4a1d9f7b0145142b3ecab20f2b888411d
+COPY --from=build --chown=65532:65532 /out/agentbbs /agentbbs
+USER 65532:65532
+EXPOSE 2223
+ENTRYPOINT ["/agentbbs"]
