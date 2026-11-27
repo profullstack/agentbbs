@@ -221,8 +221,8 @@ func TestAllowedPeerMatchesBindScope(t *testing.T) {
 	loop, _ := net.ResolveTCPAddr("tcp", "127.0.0.1:5000")
 	tail, _ := net.ResolveTCPAddr("tcp", "100.100.10.5:5000")
 	lan, _ := net.ResolveTCPAddr("tcp", "192.168.1.5:5000")
-	if !allowedPeer("127.0.0.1:2223", loop) || allowedPeer("127.0.0.1:2223", tail) {
-		t.Fatal("loopback peer scope incorrect")
+	if !allowedPeer("127.0.0.1:2223", loop) || !allowedPeer("127.0.0.1:2223", tail) || allowedPeer("127.0.0.1:2223", lan) {
+		t.Fatal("loopback-bind peer scope incorrect")
 	}
 	if !allowedPeer("100.100.10.2:2223", tail) || allowedPeer("100.100.10.2:2223", lan) {
 		t.Fatal("tailnet peer scope incorrect")

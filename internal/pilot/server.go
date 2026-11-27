@@ -135,7 +135,7 @@ func allowedPeer(bindAddress string, remote net.Addr) bool {
 		return false
 	}
 	if bind.IsLoopback() {
-		return peer.IsLoopback()
+		return peer.IsLoopback() || inTailnetRange(peer)
 	}
 	return inTailnetRange(peer)
 }
