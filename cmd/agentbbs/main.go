@@ -78,6 +78,7 @@ import (
 	"github.com/profullstack/agentbbs/internal/motd"
 	"github.com/profullstack/agentbbs/internal/news"
 	"github.com/profullstack/agentbbs/internal/payments"
+	"github.com/profullstack/agentbbs/internal/pilot"
 	"github.com/profullstack/agentbbs/internal/plugin"
 	"github.com/profullstack/agentbbs/internal/pods"
 	"github.com/profullstack/agentbbs/internal/sandbox"
@@ -143,6 +144,23 @@ func main() {
 		return
 	}
 	dataDir := env("AGENTBBS_DATA", "./data")
+	if env("AGENTBBS_PILOT", "") == "1" {
+		cfg := pilot.ConfigFromEnv(dataDir)
+		if len(os.Args) > 1 && os.Args[1] == "pilot-backup" {
+			pilotBackup(cfg, os.Args[2:])
+			return
+		}
+		if len(os.Args) > 1 && os.Args[1] == "pilot-restore" {
+			pilotRestore(cfg, os.Args[2:])
+			return
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := pilot.Run(ctx, cfg); err != nil {
+			log.Fatal("pilot", "err", err)
+		}
+		return
+	}
 	_ = os.MkdirAll(filepath.Join(dataDir, "users"), 0o755)
 
 	st, err := store.Open(filepath.Join(dataDir, "agentbbs.db"))
